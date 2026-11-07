@@ -243,6 +243,7 @@ textarea { resize: vertical; min-height: 84px; }
   </header>
 
   <div class="banner" id="banner" hidden></div>
+  <p class="subline" id="signedOutNote">Yükleniyor…</p>
 
   <section class="panel" id="nickPanel" hidden>
     <h2 id="nickTitle">Hoş geldin!</h2>
@@ -291,6 +292,7 @@ textarea { resize: vertical; min-height: 84px; }
     </form>
   </section>
 
+  <div id="app" hidden style="display:grid;gap:18px">
   <section class="panel">
     <div class="logrow">
       <button class="pee" id="peeNow" type="button">İşedim</button>
@@ -345,6 +347,7 @@ textarea { resize: vertical; min-height: 84px; }
       </table>
       <p class="empty-note" id="rankEmpty" hidden>Henüz kimse işemedi. İlk kaydı sen gir.</p>
     </section>
+  </div>
   </div>
 </div>
 
@@ -681,6 +684,8 @@ const SUPABASE_ANON_KEY = '__SUPABASE_ANON_KEY__';
   function renderMe() {
     const me = state.uid && state.players[state.uid];
     $('me').hidden = !me;
+    $('app').hidden = !me;
+    $('signedOutNote').hidden = !!me || !state.db || (state.authChecked && state.loaded && state.playersLoaded);
     if (me) { $('meNick').textContent = me.nick; fillAv($('meAv'), avOf(state.uid)); }
     const ready = state.db && state.authChecked && state.loaded && state.playersLoaded;
     const needSecure = !!(ready && !state.uid && state.legacyUid && state.players[state.legacyUid]);
