@@ -245,11 +245,15 @@ textarea { resize: vertical; min-height: 84px; }
   <div class="banner" id="banner" hidden></div>
 
   <section class="panel" id="nickPanel" hidden>
-    <h2 id="nickTitle">Hoş geldin! Adını yaz, avatarını seç</h2>
-    <div id="claimBox" hidden style="margin-bottom:18px;padding-bottom:16px;border-bottom:1px solid var(--line);display:grid;gap:8px">
-      <span class="label">Daha önce kaydoldun mu?</span>
-      <p class="hint" style="margin:0">Başka telefondan ya da ana ekrandaki uygulamadan kaydolduysan adına dokun ve şifreni gir. Yeni profil açma.</p>
+    <h2 id="nickTitle">Hoş geldin!</h2>
+    <div class="seg" id="authTabs" role="group" aria-label="Giriş türü" style="margin-bottom:16px">
+      <button type="button" data-auth="signup" aria-pressed="true">Kaydol</button>
+      <button type="button" data-auth="login" aria-pressed="false">Giriş yap</button>
+    </div>
+    <div id="claimBox" hidden style="display:grid;gap:10px">
+      <p class="hint" style="margin:0">Adına dokun ve 4 haneli şifreni gir.</p>
       <div id="claimList" style="display:flex;flex-wrap:wrap;gap:10px"></div>
+      <p class="empty-note" id="claimEmpty" hidden>Henüz kimse kaydolmamış. Kaydol'dan profil oluştur.</p>
       <form id="claimForm" hidden style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:4px">
         <span id="claimWho" style="display:inline-flex;align-items:center;gap:8px;font-weight:600"></span>
         <input id="claimPin" type="password" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="current-password" placeholder="••••" aria-label="4 haneli şifre" style="max-width:9rem;font-family:var(--font-mono);letter-spacing:.35em">
@@ -402,7 +406,7 @@ const SUPABASE_ANON_KEY = '__SUPABASE_ANON_KEY__';
 
   const state = {
     pees: [], players: {}, uid: null, db: null,
-    feed: 'today', sel: null, profile: null, pickAvatar: null,
+    feed: 'today', sel: null, profile: null, pickAvatar: null, authMode: 'signup',
     loaded: false, canWrite: true, busy: false, confirmDel: null,
     sheetAt: null,
   };
@@ -792,7 +796,7 @@ const SUPABASE_ANON_KEY = '__SUPABASE_ANON_KEY__';
   }
   function openNickPanel(edit) {
     const me = state.players[state.uid];
-    $('nickTitle').textContent = edit ? 'Profilini düzenle' : 'Hoş geldin! Adını yaz, avatarını seç';
+    $('nickTitle').textContent = edit ? 'Profilini düzenle' : 'Hoş geldin!';
     $('nickSave').textContent = edit ? 'Kaydet' : 'Başla';
     $('nickCancel').hidden = !edit;
     $('pinRow').hidden = edit; $('pinInput').value = '';
@@ -816,8 +820,7 @@ const SUPABASE_ANON_KEY = '__SUPABASE_ANON_KEY__';
     const key = nick.toLocaleLowerCase('tr');
     const dup = Object.keys(state.players).find((id) => id !== state.uid && state.players[id].nick.trim().toLocaleLowerCase('tr') === key);
     if (dup) {
-      toast(isNew ? 'Bu isim alınmış. Sen isen yukarıdan adına dokun.' : 'Bu isim alınmış, başka bir isim seç.');
-      if (isNew) $('claimBox').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      toast(isNew ? 'Bu isim alınmış. Senin hesabınsa Giriş yap\'a geç.' : 'Bu isim alınmış, başka bir isim seç.');
       return;
     }
     const pin = $('pinInput').value.trim();
@@ -922,9 +925,15 @@ const SUPABASE_ANON_KEY = '__SUPABASE_ANON_KEY__';
   function renderClaim() {
     const box = $('claimBox'); const list = $('claimList');
     const ids = Object.keys(state.players).filter((id) => id !== state.uid);
-    const show = !$('nickPanel').hidden && !state.uid && ids.length > 0;
-    box.hidden = !show;
-    if (!show) { state.claimId = null; $('claimForm').hidden = true; return; }
+    const auth = !$('nickPanel').hidden && !state.uid && !state.nickEdit;
+    $('authTabs').hidden = !auth;
+    document.querySelectorAll('[data-auth]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.auth === state.authMode)));
+    const login = auth && state.authMode === 'login';
+    $('nickForm').hidden = login;
+    $('nickTitle').textContent = state.nickEdit ? 'Profilini düzenle' : 'Hoş geldin!';
+    box.hidden = !login;
+    $('claimEmpty').hidden = ids.length > 0;
+    if (!login) { state.claimId = null; $('claimForm').hidden = true; return; }
     list.innerHTML = '';
     ids.sort((a, b) => nickOf(a).localeCompare(nickOf(b), 'tr')).forEach((id) => {
       const b = document.createElement('button'); b.type = 'button'; b.className = 'ghost';
@@ -974,6 +983,9 @@ const SUPABASE_ANON_KEY = '__SUPABASE_ANON_KEY__';
   }
 
   $('claimCancel').addEventListener('click', () => { state.claimId = null; render(); });
+  document.querySelectorAll('[data-auth]').forEach((b) => b.addEventListener('click', () => {
+    state.authMode = b.dataset.auth; state.claimId = null; render();
+  }));
   $('claimForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     if (state.busy || !state.claimId) return;
