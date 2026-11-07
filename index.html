@@ -246,6 +246,11 @@ textarea { resize: vertical; min-height: 84px; }
 
   <section class="panel" id="nickPanel" hidden>
     <h2 id="nickTitle">Hoş geldin! Adını yaz, avatarını seç</h2>
+    <div id="claimBox" hidden style="margin-bottom:18px;padding-bottom:16px;border-bottom:1px solid var(--line);display:grid;gap:8px">
+      <span class="label">Daha önce kaydoldun mu?</span>
+      <p class="hint" style="margin:0">Başka telefondan ya da ana ekrandaki uygulamadan kaydolduysan kendi adına dokun. Yeni profil açma.</p>
+      <div id="claimList" style="display:flex;flex-wrap:wrap;gap:10px"></div>
+    </div>
     <form id="nickForm" style="display:grid;gap:14px">
       <div style="display:grid;gap:6px">
         <label class="label" for="nickInput">Adın</label>
@@ -260,11 +265,6 @@ textarea { resize: vertical; min-height: 84px; }
         <button class="ghost" type="button" id="nickCancel" hidden>Vazgeç</button>
       </div>
     </form>
-    <div id="claimBox" hidden style="margin-top:18px;padding-top:14px;border-top:1px solid var(--line);display:grid;gap:8px">
-      <span class="label">Daha önce başka bir telefondan kaydoldun mu?</span>
-      <p class="hint" style="margin:0">Kendi adına dokun, kayıtların bu cihaza gelsin.</p>
-      <div id="claimList" style="display:flex;flex-wrap:wrap;gap:10px"></div>
-    </div>
   </section>
 
   <section class="panel">
@@ -784,6 +784,16 @@ const SUPABASE_ANON_KEY = '__SUPABASE_ANON_KEY__';
     if (!nick || !state.db || !state.uid) return;
     const avatar = AV[state.pickAvatar] ? state.pickAvatar : AVATARS[0].id;
     const isNew = !state.players[state.uid];
+    if (isNew) {
+      const key = nick.toLocaleLowerCase('tr');
+      const dup = Object.keys(state.players).find((id) => id !== state.uid && state.players[id].nick.trim().toLocaleLowerCase('tr') === key);
+      if (dup && state.dupOk !== key) {
+        state.dupOk = key;
+        toast('"' + nick + '" adında biri zaten var. Sen isen yukarıdan adına dokun. Yeni profil için tekrar bas.');
+        $('claimBox').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        return;
+      }
+    }
     try {
       await state.db.doc('players/' + state.uid).set({ nick, avatar, updatedAt: Date.now() });
       $('nickPanel').hidden = true; toast(isNew ? 'Hoş geldin, ' + nick + '.' : 'Profil güncellendi.');
@@ -833,18 +843,30 @@ const SUPABASE_ANON_KEY = '__SUPABASE_ANON_KEY__';
               docs: [...rows.entries()].map(([id, r]) => ({ id, data: () => fromRow[name](r) })),
               metadata: { fromCache: false },
             });
-            let fetching = false;
+            let fetching = false; let again = false; let pending = [];
+            const apply = (p) => {
+              if (p.eventType === 'DELETE') { if (p.old && p.old.id != null) rows.delete(String(p.old.id)); }
+              else if (p.new && p.new.id != null) rows.set(String(p.new.id), p.new);
+            };
             const refresh = async () => {
-              if (fetching) return; fetching = true;
-              try { const all = await fetchAll(name); rows.clear(); all.forEach((r) => rows.set(String(r.id), r)); emit(); }
-              catch (e) { if (onErr) onErr(e); }
-              finally { fetching = false; }
+              if (fetching) { again = true; return; }
+              fetching = true; pending = [];
+              try {
+                const all = await fetchAll(name);
+                rows.clear(); all.forEach((r) => rows.set(String(r.id), r));
+                pending.forEach(apply);
+                emit();
+              } catch (e) { if (onErr) onErr(e); }
+              finally {
+                fetching = false; pending = [];
+                if (again) { again = false; refresh(); }
+              }
             };
             refresh();
             sb.channel('rt-' + name)
               .on('postgres_changes', { event: '*', schema: 'public', table: name }, (p) => {
-                if (p.eventType === 'DELETE') { if (p.old && p.old.id != null) rows.delete(String(p.old.id)); }
-                else if (p.new && p.new.id != null) rows.set(String(p.new.id), p.new);
+                apply(p);
+                if (fetching) pending.push(p);
                 emit();
               })
               .subscribe((status) => { if (status === 'SUBSCRIBED') refresh(); });
