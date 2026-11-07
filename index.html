@@ -248,8 +248,14 @@ textarea { resize: vertical; min-height: 84px; }
     <h2 id="nickTitle">Hoş geldin! Adını yaz, avatarını seç</h2>
     <div id="claimBox" hidden style="margin-bottom:18px;padding-bottom:16px;border-bottom:1px solid var(--line);display:grid;gap:8px">
       <span class="label">Daha önce kaydoldun mu?</span>
-      <p class="hint" style="margin:0">Başka telefondan ya da ana ekrandaki uygulamadan kaydolduysan kendi adına dokun. Yeni profil açma.</p>
+      <p class="hint" style="margin:0">Başka telefondan ya da ana ekrandaki uygulamadan kaydolduysan adına dokun ve şifreni gir. Yeni profil açma.</p>
       <div id="claimList" style="display:flex;flex-wrap:wrap;gap:10px"></div>
+      <form id="claimForm" hidden style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:4px">
+        <span id="claimWho" style="display:inline-flex;align-items:center;gap:8px;font-weight:600"></span>
+        <input id="claimPin" type="password" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="current-password" placeholder="••••" aria-label="4 haneli şifre" style="max-width:9rem;font-family:var(--font-mono);letter-spacing:.35em">
+        <button class="pee sm" type="submit" id="claimSend">Gir</button>
+        <button class="ghost" type="button" id="claimCancel">Vazgeç</button>
+      </form>
     </div>
     <form id="nickForm" style="display:grid;gap:14px">
       <div style="display:grid;gap:6px">
@@ -260,10 +266,24 @@ textarea { resize: vertical; min-height: 84px; }
         <span class="label" id="avLabel">Avatarın</span>
         <div class="avgrid" id="avGrid" role="group" aria-labelledby="avLabel"></div>
       </div>
+      <div style="display:grid;gap:6px" id="pinRow">
+        <label class="label" for="pinInput">4 haneli şifre</label>
+        <input id="pinInput" type="password" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="new-password" placeholder="••••" style="max-width:9rem;font-family:var(--font-mono);letter-spacing:.35em">
+        <p class="hint" style="margin:0">Bu telefonda bir daha sorulmaz. Başka bir telefondan girerken lazım olacak.</p>
+      </div>
       <div class="actions" style="justify-content:flex-start">
         <button class="pee sm" type="submit" id="nickSave">Başla</button>
         <button class="ghost" type="button" id="nickCancel" hidden>Vazgeç</button>
       </div>
+    </form>
+  </section>
+
+  <section class="panel" id="securePanel" hidden>
+    <h2 id="secureTitle">Profilini koru</h2>
+    <p class="hint" style="margin:0 0 12px">Artık her profilin 4 haneli bir şifresi var. Bu telefonda bir daha sorulmayacak, başka bir telefondan girerken lazım olacak.</p>
+    <form id="secureForm" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">
+      <input id="securePin" type="password" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="new-password" placeholder="••••" aria-label="4 haneli şifre" style="max-width:9rem;font-family:var(--font-mono);letter-spacing:.35em">
+      <button class="pee sm" type="submit" id="secureSend">Şifreyi kaydet</button>
     </form>
   </section>
 
@@ -658,9 +678,16 @@ const SUPABASE_ANON_KEY = '__SUPABASE_ANON_KEY__';
     const me = state.uid && state.players[state.uid];
     $('me').hidden = !me;
     if (me) { $('meNick').textContent = me.nick; fillAv($('meAv'), avOf(state.uid)); }
-    if (state.db && state.uid && state.loaded && state.playersLoaded && state.canWrite && !me && $('nickPanel').hidden) openNickPanel(false);
+    const ready = state.db && state.authChecked && state.loaded && state.playersLoaded;
+    const needSecure = !!(ready && !state.uid && state.legacyUid && state.players[state.legacyUid]);
+    if (needSecure && $('securePanel').hidden) {
+      $('secureTitle').textContent = nickOf(state.legacyUid) + ', profilini koru';
+      $('securePanel').hidden = false;
+    }
+    if (!needSecure) $('securePanel').hidden = true;
+    if (ready && !state.uid && !needSecure && $('nickPanel').hidden) openNickPanel(false);
     if (me && !state.nickEdit && !$('nickPanel').hidden) $('nickPanel').hidden = true;
-    $('peeNow').disabled = !state.db || !state.uid || !state.canWrite;
+    $('peeNow').disabled = !state.db;
   }
 
   function render() {
@@ -673,8 +700,12 @@ const SUPABASE_ANON_KEY = '__SUPABASE_ANON_KEY__';
   let lastFocus = null;
   function openSheet() {
     const editTime = false;
-    if (!state.db || !state.uid) return;
-    if (!state.players[state.uid]) { $('nickPanel').hidden = false; $('nickInput').focus(); toast('Önce bir takma ad seç.'); return; }
+    if (!state.db) return;
+    if (!state.uid || !state.players[state.uid]) {
+      if (!$('securePanel').hidden) { $('securePin').focus(); toast('Önce şifreni belirle.'); }
+      else { if ($('nickPanel').hidden) openNickPanel(false); $('nickInput').focus(); toast('Önce profilini oluştur.'); }
+      return;
+    }
     lastFocus = document.activeElement;
     const now = new Date(); now.setSeconds(0, 0);
     state.sheetAt = now;
@@ -704,17 +735,13 @@ const SUPABASE_ANON_KEY = '__SUPABASE_ANON_KEY__';
     const before = summarize().counts.get(s) || 0;
     state.busy = true; $('sheetSend').disabled = true;
     try {
-      const data = { by: state.uid, day, hour, minute, ts: date.getTime(), createdAt: Date.now() };
-      if (note) data.note = note;
-      await state.db.collection('pees').add(data);
+      await rpc('add_pee', { p_token: state.token, p_day: day, p_hour: hour, p_minute: minute, p_ts: date.getTime(), p_note: note || null });
       closeSheet();
       state.sel = s;
       const after = before + 1;
       toast(DAYS[day] + ' ' + pad(hour) + ':00 karesi ' + (after >= FULL && before < FULL ? 'tam doldu!' : Math.min(after, FULL) + '/' + FULL + ' oldu.'));
     } catch (e) {
-      if (e && e.code === 'invalid_argument') { state.canWrite = false; closeSheet(); showBanner('Kayıt eklenemedi.'); }
-      else if (e && e.code === 'quota_exceeded') toast('Veritabanı doldu, eski kayıtları silmek gerekiyor.');
-      else toast('Kaydedemedim, birazdan tekrar dene.');
+      toast(errText(e, 'Kaydedemedim, birazdan tekrar dene.'));
       $('sheetSend').disabled = false;
     } finally { state.busy = false; render(); }
   }
@@ -722,7 +749,7 @@ const SUPABASE_ANON_KEY = '__SUPABASE_ANON_KEY__';
   async function deleteEntry(id) {
     if (state.confirmDel !== id) { state.confirmDel = id; render(); return; }
     state.confirmDel = null;
-    try { await state.db.doc('pees/' + id).delete(); toast('Kayıt silindi.'); }
+    try { await rpc('delete_pee', { p_token: state.token, p_id: id }); toast('Kayıt silindi.'); }
     catch (e) { toast('Silemedim, tekrar dene.'); render(); }
   }
 
@@ -768,6 +795,7 @@ const SUPABASE_ANON_KEY = '__SUPABASE_ANON_KEY__';
     $('nickTitle').textContent = edit ? 'Profilini düzenle' : 'Hoş geldin! Adını yaz, avatarını seç';
     $('nickSave').textContent = edit ? 'Kaydet' : 'Başla';
     $('nickCancel').hidden = !edit;
+    $('pinRow').hidden = edit; $('pinInput').value = '';
     state.nickEdit = edit;
     $('nickInput').value = (me && me.nick) || '';
     state.pickAvatar = (me && AV[me.avatar] && me.avatar) || AVATARS[Math.floor(Math.random() * AVATARS.length)].id;
@@ -780,28 +808,34 @@ const SUPABASE_ANON_KEY = '__SUPABASE_ANON_KEY__';
 
   $('nickForm').addEventListener('submit', async (e) => {
     e.preventDefault();
+    if (state.busy || !state.db) return;
     const nick = $('nickInput').value.trim().slice(0, 24);
-    if (!nick || !state.db || !state.uid) return;
+    if (!nick) return;
     const avatar = AV[state.pickAvatar] ? state.pickAvatar : AVATARS[0].id;
-    const isNew = !state.players[state.uid];
-    if (isNew) {
-      const key = nick.toLocaleLowerCase('tr');
-      const dup = Object.keys(state.players).find((id) => id !== state.uid && state.players[id].nick.trim().toLocaleLowerCase('tr') === key);
-      if (dup && state.dupOk !== key) {
-        state.dupOk = key;
-        toast('"' + nick + '" adında biri zaten var. Sen isen yukarıdan adına dokun. Yeni profil için tekrar bas.');
-        $('claimBox').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-        return;
-      }
+    const isNew = !state.uid || !state.players[state.uid];
+    const key = nick.toLocaleLowerCase('tr');
+    const dup = Object.keys(state.players).find((id) => id !== state.uid && state.players[id].nick.trim().toLocaleLowerCase('tr') === key);
+    if (dup) {
+      toast(isNew ? 'Bu isim alınmış. Sen isen yukarıdan adına dokun.' : 'Bu isim alınmış, başka bir isim seç.');
+      if (isNew) $('claimBox').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      return;
     }
+    const pin = $('pinInput').value.trim();
+    if (isNew && !/^[0-9]{4}$/.test(pin)) { toast('4 haneli bir şifre belirle.'); $('pinInput').focus(); return; }
+    state.busy = true; $('nickSave').disabled = true;
     try {
-      await state.db.doc('players/' + state.uid).set({ nick, avatar, updatedAt: Date.now() });
-      $('nickPanel').hidden = true; toast(isNew ? 'Hoş geldin, ' + nick + '.' : 'Profil güncellendi.');
+      if (isNew) {
+        const id = await rpc('register_player', { p_token: state.token, p_nick: nick, p_avatar: avatar, p_pin: pin });
+        setMe(id);
+      } else {
+        await rpc('update_profile', { p_token: state.token, p_nick: nick, p_avatar: avatar });
+      }
+      state.players = Object.assign({}, state.players, { [state.uid]: { nick, avatar } });
+      $('nickPanel').hidden = true;
+      toast(isNew ? 'Hoş geldin, ' + nick + '.' : 'Profil güncellendi.');
     } catch (err) {
-      if (err && err.code === 'invalid_argument') { state.canWrite = false; showBanner('Kayıt eklenemedi.'); $('nickPanel').hidden = true; }
-      else toast('Kaydedemedim, tekrar dene.');
-      render();
-    }
+      toast(errText(err, 'Kaydedemedim, tekrar dene.'));
+    } finally { state.busy = false; $('nickSave').disabled = false; render(); }
   });
   $('changeNick').addEventListener('click', () => openNickPanel(true));
   document.querySelectorAll('[data-feed]').forEach((b) => b.addEventListener('click', () => {
@@ -885,39 +919,114 @@ const SUPABASE_ANON_KEY = '__SUPABASE_ANON_KEY__';
     };
   }
 
-  function localId() {
-    let id = null;
-    try { id = localStorage.getItem('iseme-uid'); } catch (e) {}
-    if (!id) {
-      id = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2));
-      try { localStorage.setItem('iseme-uid', id); } catch (e) {}
-    }
-    return id;
-  }
-
   function renderClaim() {
     const box = $('claimBox'); const list = $('claimList');
-    const others = Object.keys(state.players).filter((id) => id !== state.uid);
-    const show = !$('nickPanel').hidden && !state.players[state.uid] && others.length > 0;
-    box.hidden = !show; if (!show) return;
+    const ids = Object.keys(state.players).filter((id) => id !== state.uid);
+    const show = !$('nickPanel').hidden && !state.uid && ids.length > 0;
+    box.hidden = !show;
+    if (!show) { state.claimId = null; $('claimForm').hidden = true; return; }
     list.innerHTML = '';
-    others.forEach((id) => {
+    ids.sort((a, b) => nickOf(a).localeCompare(nickOf(b), 'tr')).forEach((id) => {
       const b = document.createElement('button'); b.type = 'button'; b.className = 'ghost';
       b.style.display = 'inline-flex'; b.style.alignItems = 'center'; b.style.gap = '8px';
+      if (id === state.claimId) b.style.borderColor = 'var(--fg)';
       b.append(avatarEl(id), nickOf(id));
       b.addEventListener('click', () => {
-        state.uid = id; try { localStorage.setItem('iseme-uid', id); } catch (e) {}
-        $('nickPanel').hidden = true; toast('Tekrar hoş geldin, ' + nickOf(id) + '.'); render();
+        state.claimId = id;
+        const w = $('claimWho'); w.innerHTML = ''; w.append(avatarEl(id), nickOf(id) + ' olarak gir:');
+        $('claimPin').value = ''; $('claimForm').hidden = false; render(); $('claimPin').focus();
       });
       list.appendChild(b);
     });
+    $('claimForm').hidden = !state.claimId;
   }
+
+  function setMe(id) {
+    state.uid = id; state.legacyUid = null; state.claimId = null;
+    try { localStorage.removeItem('iseme-uid'); } catch (e) {}
+  }
+
+  async function rpc(fn, args) {
+    const { data, error } = await state.sb.rpc(fn, args);
+    if (error) throw error;
+    return data;
+  }
+
+  function errText(e, fallback) {
+    const m = (e && (e.message || e.details)) || '';
+    if (m.includes('players_nick_unique')) return 'Bu isim alınmış, başka bir isim seç.';
+    if (m.includes('gecersiz_sifre')) return 'Şifre 4 haneli bir sayı olmalı.';
+    if (m.includes('gelecek_tarih')) return 'Geleceğe işeyemezsin.';
+    if (m.includes('yetkisiz')) return 'Bu cihaz bir profile bağlı değil. Sayfayı yenile.';
+    if (m.includes('cihaz_kayitli')) return 'Bu cihaz zaten bir profile bağlı. Sayfayı yenile.';
+    return fallback;
+  }
+
+  function deviceToken() {
+    let t = null;
+    try { t = localStorage.getItem('iseme-token'); } catch (e) {}
+    if (!t || t.length < 32) {
+      const a = new Uint8Array(32); crypto.getRandomValues(a);
+      t = Array.from(a, (b) => b.toString(16).padStart(2, '0')).join('');
+      try { localStorage.setItem('iseme-token', t); } catch (e) {}
+    }
+    return t;
+  }
+
+  $('claimCancel').addEventListener('click', () => { state.claimId = null; render(); });
+  $('claimForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (state.busy || !state.claimId) return;
+    const pin = $('claimPin').value.trim();
+    if (!/^[0-9]{4}$/.test(pin)) { toast('4 haneli şifreni gir.'); return; }
+    state.busy = true; $('claimSend').disabled = true;
+    try {
+      const r = await rpc('claim_player', { p_player_id: state.claimId, p_token: state.token, p_pin: pin }) || {};
+      if (r.ok) {
+        const id = state.claimId; setMe(id);
+        $('nickPanel').hidden = true; toast('Tekrar hoş geldin, ' + nickOf(id) + '.');
+      } else if (r.reason === 'kilitli') {
+        const until = r.until ? new Date(r.until) : null;
+        toast('Çok fazla yanlış deneme. ' + (until ? hm(until) + "'dan sonra" : 'Daha sonra') + ' tekrar dene.');
+      } else if (r.reason === 'sifresiz') {
+        toast('Bu profilin henüz şifresi yok. Önce kendi telefonundan girip şifre belirlemeli.');
+      } else {
+        $('claimPin').value = '';
+        toast('Şifre yanlış.' + (r.left ? ' ' + r.left + ' deneme hakkın kaldı.' : ''));
+      }
+    } catch (err) { toast(errText(err, 'Giriş yapılamadı, tekrar dene.')); }
+    finally { state.busy = false; $('claimSend').disabled = false; render(); }
+  });
+
+  $('secureForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (state.busy || !state.legacyUid) return;
+    const pin = $('securePin').value.trim();
+    if (!/^[0-9]{4}$/.test(pin)) { toast('4 haneli bir şifre belirle.'); return; }
+    state.busy = true; $('secureSend').disabled = true;
+    try {
+      const ok = await rpc('secure_existing', { p_player_id: state.legacyUid, p_token: state.token, p_pin: pin });
+      if (ok) { setMe(state.legacyUid); toast('Şifren kaydedildi.'); }
+      else {
+        state.legacyUid = null; try { localStorage.removeItem('iseme-uid'); } catch (er) {}
+        toast('Bu profilin zaten bir şifresi var. Adına dokunup şifrenle gir.');
+      }
+      $('securePanel').hidden = true;
+    } catch (err) { toast(errText(err, 'Kaydedemedim, tekrar dene.')); }
+    finally { state.busy = false; $('secureSend').disabled = false; render(); }
+  });
 
   async function start() {
     if (!window.supabase || !SUPABASE_URL.startsWith('https://')) { showBanner('Veritabanı ayarları eksik.'); return; }
     const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { auth: { persistSession: false } });
-    state.db = makeDb(sb);
-    state.uid = localId();
+    state.sb = sb; state.db = makeDb(sb);
+    state.token = deviceToken();
+    let legacy = null; try { legacy = localStorage.getItem('iseme-uid'); } catch (e) {}
+    rpc('whoami', { p_token: state.token }).then((id) => {
+      state.uid = id || null;
+      if (!state.uid && legacy) state.legacyUid = legacy;
+      state.authChecked = true; render();
+    }, () => { showBanner('Sunucuya ulaşılamadı. Sayfayı yenile.'); });
     const timer = setTimeout(() => { if (!state.loaded) $('progressText').textContent = 'Kayıtlara henüz ulaşılamadı, bağlantını kontrol et.'; }, 10000);
     state.db.collection('players').onSnapshot((snap) => {
       const m = {}; snap.docs.forEach((d) => { const v = d.data(); if (v && typeof v.nick === 'string') m[d.id] = { nick: v.nick.slice(0, 24), avatar: typeof v.avatar === 'string' && AV[v.avatar] ? v.avatar : null }; });
