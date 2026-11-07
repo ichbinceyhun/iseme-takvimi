@@ -49,19 +49,15 @@ alter table public.pees enable row level security;
 alter table public.player_secrets enable row level security;
 alter table public.devices enable row level security;
 
--- Herkes okuyabilir
+-- Tablolara doğrudan erişim tamamen kapalı. Okuma ve yazma yalnızca
+-- aşağıdaki fonksiyonlarla ve giriş yapmış bir cihazla yapılır.
 drop policy if exists players_select on public.players;
 drop policy if exists pees_select on public.pees;
-create policy players_select on public.players for select to anon, authenticated using (true);
-create policy pees_select on public.pees for select to anon, authenticated using (true);
-
--- Siteden doğrudan yazma kapalı; yazma yalnızca aşağıdaki fonksiyonlarla
 drop policy if exists players_insert on public.players;
 drop policy if exists players_update on public.players;
 drop policy if exists pees_insert on public.pees;
 drop policy if exists pees_delete on public.pees;
-revoke insert, update, delete on public.players, public.pees from anon, authenticated;
-grant select on public.players, public.pees to anon, authenticated;
+revoke all on public.players, public.pees from anon, authenticated;
 revoke all on public.player_secrets, public.devices from anon, authenticated;
 
 -- Yardımcı fonksiyonlar (siteden çağrılamaz) ----------------------------------
@@ -156,6 +152,41 @@ begin
   return jsonb_build_object('ok', false, 'reason', 'yanlis', 'left', 5 - (s.failed_attempts % 5));
 end $$;
 
+-- Ada ve şifreye göre giriş (isim listesi gösterilmeden)
+create or replace function public.login(p_nick text, p_token text, p_pin text)
+returns jsonb language plpgsql security definer set search_path = ''
+as $$
+declare v_id text; r jsonb;
+begin
+  select id into v_id from public.players
+    where lower(translate(btrim(nick), 'İIı', 'iii')) = lower(translate(btrim(coalesce(p_nick, '')), 'İIı', 'iii'))
+    limit 1;
+  if v_id is null then return jsonb_build_object('ok', false, 'reason', 'yanlis'); end if;
+  r := public.claim_player(v_id, p_token, p_pin);
+  return r - 'left';
+end $$;
+
+-- Şifre sisteminden önce açılmış ve henüz şifresi olmayan profilin adı
+create or replace function public.legacy_status(p_player_id text)
+returns text language sql stable security definer set search_path = ''
+as $$
+  select p.nick from public.players p
+  where p.id = p_player_id
+    and not exists (select 1 from public.player_secrets s where s.player_id = p.id)
+$$;
+
+-- Giriş yapmış cihaz için bütün veriler
+create or replace function public.fetch_data(p_token text)
+returns jsonb language plpgsql stable security definer set search_path = ''
+as $$
+begin
+  if public._player_for(p_token) is null then return null; end if;
+  return jsonb_build_object(
+    'players', coalesce((select jsonb_agg(jsonb_build_array(id, nick, avatar)) from public.players), '[]'::jsonb),
+    'pees', coalesce((select jsonb_agg(jsonb_build_array(id, player_id, day, hour, minute, ts, note)) from public.pees), '[]'::jsonb)
+  );
+end $$;
+
 -- Kendi profilini düzenle
 create or replace function public.update_profile(p_token text, p_nick text, p_avatar text)
 returns void language plpgsql security definer set search_path = ''
@@ -191,6 +222,12 @@ begin
   return found;
 end $$;
 
+revoke execute on function public.login(text, text, text) from public;
+revoke execute on function public.legacy_status(text) from public;
+revoke execute on function public.fetch_data(text) from public;
+grant execute on function public.login(text, text, text) to anon, authenticated;
+grant execute on function public.legacy_status(text) to anon, authenticated;
+grant execute on function public.fetch_data(text) to anon, authenticated;
 revoke execute on function public.whoami(text) from public;
 revoke execute on function public.register_player(text, text, text, text) from public;
 revoke execute on function public.secure_existing(text, text, text) from public;
@@ -201,19 +238,18 @@ revoke execute on function public.delete_pee(text, uuid) from public;
 grant execute on function public.whoami(text) to anon, authenticated;
 grant execute on function public.register_player(text, text, text, text) to anon, authenticated;
 grant execute on function public.secure_existing(text, text, text) to anon, authenticated;
-grant execute on function public.claim_player(text, text, text) to anon, authenticated;
+revoke execute on function public.claim_player(text, text, text) from anon, authenticated;
 grant execute on function public.update_profile(text, text, text) to anon, authenticated;
 grant execute on function public.add_pee(text, int, int, int, bigint, text) to anon, authenticated;
 grant execute on function public.delete_pee(text, uuid) to anon, authenticated;
 
--- Canlı güncellemeler ---------------------------------------------------------
-
+-- Canlı güncellemeler kapalı (site 30 saniyede bir yeniler)
 do $$
 begin
-  if not exists (select 1 from pg_publication_tables where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'players') then
-    alter publication supabase_realtime add table public.players;
+  if exists (select 1 from pg_publication_tables where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'players') then
+    alter publication supabase_realtime drop table public.players;
   end if;
-  if not exists (select 1 from pg_publication_tables where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'pees') then
-    alter publication supabase_realtime add table public.pees;
+  if exists (select 1 from pg_publication_tables where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'pees') then
+    alter publication supabase_realtime drop table public.pees;
   end if;
 end $$;
