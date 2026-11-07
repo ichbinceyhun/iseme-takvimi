@@ -239,7 +239,7 @@ textarea { resize: vertical; min-height: 84px; }
       <h1>İşeme Takvimi<span class="drop">.</span></h1>
       <p class="lede">Hedef: haftanın 168 saatinin her birini 4 kez işenmiş hale getirip tabloyu tamamen işemek. Pazartesi 15:15'te işediysen Pazartesi 15:00 karesi bir ton koyulaşır.</p>
     </div>
-    <div class="me" id="me" hidden><span class="av" id="meAv" aria-hidden="true"></span><b id="meNick"></b><button class="linkbtn" id="myProfile" type="button">profilim</button><button class="linkbtn" id="changeNick" type="button">düzenle</button></div>
+    <div class="me" id="me" hidden><span class="av" id="meAv" aria-hidden="true"></span><b id="meNick"></b><span class="tag" id="adminTag" hidden>yönetici</span><button class="linkbtn" id="myProfile" type="button">profilim</button><button class="linkbtn" id="changeNick" type="button">düzenle</button></div>
   </header>
 
   <div class="banner" id="banner" hidden></div>
@@ -392,6 +392,27 @@ textarea { resize: vertical; min-height: 84px; }
     <div>
       <h3 class="h3">Son işemeleri</h3>
       <ul class="feed" id="profFeed"></ul>
+    </div>
+    <div id="profAdmin" hidden style="display:grid;gap:14px;border-top:1px solid var(--line);padding-top:16px">
+      <h3 class="h3" style="margin:0">Yönetici</h3>
+      <form id="admProfileForm" style="display:grid;gap:10px">
+        <label class="label" for="admNick">Ad ve avatar</label>
+        <input id="admNick" maxlength="24" autocomplete="off">
+        <div class="avgrid" id="admAvGrid" role="group" aria-label="Avatar"></div>
+        <div class="actions" style="justify-content:flex-start"><button class="ghost" type="submit" id="admProfileSave">Kaydet</button></div>
+      </form>
+      <form id="admPinForm" style="display:grid;gap:8px">
+        <label class="label" for="admPin">Şifreyi sıfırla</label>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">
+          <input id="admPin" type="password" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="new-password" placeholder="••••" style="max-width:9rem;font-family:var(--font-mono);letter-spacing:.35em">
+          <button class="ghost" type="submit" id="admPinSave">Yeni şifreyi kaydet</button>
+        </div>
+        <p class="hint" style="margin:0">Kilitli profilin kilidi de açılır. Yeni şifreyi kişiye sen söyle.</p>
+      </form>
+      <div id="admDeleteRow" style="display:grid;gap:6px">
+        <span class="label">Profili sil</span>
+        <div><button class="ghost" type="button" id="admDelete" style="color:var(--danger);border-color:var(--danger)">Profili ve bütün kayıtlarını sil</button></div>
+      </div>
     </div>
   </section>
 </div>
@@ -559,7 +580,12 @@ const SUPABASE_ANON_KEY = '__SUPABASE_ANON_KEY__';
     const right = document.createElement('span'); right.style.display = 'flex'; right.style.gap = '8px'; right.style.alignItems = 'baseline';
     const w = document.createElement('span'); w.className = 'when'; w.textContent = fmt(p.ts);
     right.appendChild(w);
-    if (p.by === state.uid && state.canWrite) {
+    if (state.admin) {
+      const ed = document.createElement('button'); ed.type = 'button'; ed.className = 'del'; ed.style.color = 'var(--muted)';
+      ed.textContent = 'Düzenle'; ed.addEventListener('click', () => openEditSheet(p));
+      right.appendChild(ed);
+    }
+    if ((p.by === state.uid || state.admin) && state.canWrite) {
       const d = document.createElement('button'); d.type = 'button'; d.className = 'del';
       d.textContent = state.confirmDel === p.id ? 'Emin misin?' : 'Sil';
       d.addEventListener('click', () => deleteEntry(p.id));
@@ -596,6 +622,7 @@ const SUPABASE_ANON_KEY = '__SUPABASE_ANON_KEY__';
   function rankRows() {
     const ts = todayStart(), ws = weekStart();
     const stats = new Map();
+    Object.keys(state.players).forEach((id) => stats.set(id, { today: 0, week: 0, total: 0 }));
     for (const p of state.pees) {
       const s = stats.get(p.by) || { today: 0, week: 0, total: 0 };
       s.total++; if (p.ts >= ws) s.week++; if (p.ts >= ts) s.today++;
@@ -679,9 +706,73 @@ const SUPABASE_ANON_KEY = '__SUPABASE_ANON_KEY__';
     const ul = $('profFeed'); ul.innerHTML = '';
     if (!mine.length) { const li = document.createElement('li'); li.className = 'empty-note'; li.textContent = 'Henüz kayıt yok.'; ul.appendChild(li); }
     mine.slice(0, 15).forEach((p) => ul.appendChild(feedItem(p)));
+    renderProfileAdmin(id);
+  }
+
+  function renderProfileAdmin(id) {
+    $('profAdmin').hidden = !state.admin;
+    if (!state.admin) return;
+    $('admDeleteRow').hidden = id === state.uid;
+    if (state.admFor !== id) { // alanları yalnızca pencere açılınca doldur, yazarken silinmesin
+      state.admFor = id; state.admConfirmDel = false;
+      const pl = state.players[id] || {};
+      $('admNick').value = pl.nick || '';
+      $('admPin').value = '';
+      state.admAvatar = AV[pl.avatar] ? pl.avatar : null;
+      const g = $('admAvGrid');
+      if (!g.childElementCount) {
+        AVATARS.forEach((a) => {
+          const b = document.createElement('button'); b.type = 'button'; b.className = 'avopt'; b.dataset.av = a.id;
+          b.setAttribute('aria-label', a.n); b.title = a.n;
+          const e = document.createElement('span'); e.className = 'e'; e.setAttribute('aria-hidden', 'true'); fillAv(e, a);
+          b.appendChild(e); g.appendChild(b);
+        });
+        g.addEventListener('click', (ev) => { const t = ev.target.closest('[data-av]'); if (!t) return; state.admAvatar = t.dataset.av; renderProfileAdmin(state.profile); });
+      }
+    }
+    $('admAvGrid').querySelectorAll('[data-av]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.av === state.admAvatar)));
+    $('admDelete').textContent = state.admConfirmDel ? 'Emin misin? Geri alınamaz' : 'Profili ve bütün kayıtlarını sil';
   }
   function openProfile(id) { state.profile = id; state.confirmDel = null; render(); $('profClose').focus(); }
-  function closeProfile() { state.profile = null; render(); }
+  function closeProfile() { state.profile = null; state.admFor = null; render(); }
+
+  $('admProfileForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const id = state.profile; if (!id || state.busy) return;
+    const nick = $('admNick').value.trim().slice(0, 24);
+    if (!nick) { toast('Ad boş olamaz.'); return; }
+    const avatar = state.admAvatar || AVATARS[0].id;
+    state.busy = true;
+    try {
+      await rpc('admin_update_player', { p_token: state.token, p_player_id: id, p_nick: nick, p_avatar: avatar });
+      state.players = Object.assign({}, state.players, { [id]: { nick, avatar } });
+      toast('Profil güncellendi.'); loadAll();
+    } catch (err) { toast(errText(err, 'Kaydedemedim, tekrar dene.')); }
+    finally { state.busy = false; render(); }
+  });
+  $('admPinForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const id = state.profile; if (!id || state.busy) return;
+    const pin = $('admPin').value.trim();
+    if (!/^[0-9]{4}$/.test(pin)) { toast('4 haneli bir şifre yaz.'); return; }
+    state.busy = true;
+    try {
+      await rpc('admin_reset_pin', { p_token: state.token, p_player_id: id, p_pin: pin });
+      $('admPin').value = ''; toast(nickOf(id) + ' için yeni şifre kaydedildi.');
+    } catch (err) { toast(errText(err, 'Kaydedemedim, tekrar dene.')); }
+    finally { state.busy = false; }
+  });
+  $('admDelete').addEventListener('click', async () => {
+    const id = state.profile; if (!id || state.busy || id === state.uid) return;
+    if (!state.admConfirmDel) { state.admConfirmDel = true; renderProfileAdmin(id); return; }
+    state.busy = true;
+    const name = nickOf(id);
+    try {
+      await rpc('admin_delete_player', { p_token: state.token, p_player_id: id });
+      closeProfile(); toast(name + ' silindi.'); loadAll();
+    } catch (err) { toast(errText(err, 'Silemedim, tekrar dene.')); }
+    finally { state.busy = false; }
+  });
 
   function renderMe() {
     const me = state.uid && state.players[state.uid];
@@ -689,6 +780,7 @@ const SUPABASE_ANON_KEY = '__SUPABASE_ANON_KEY__';
     $('app').hidden = !me;
     $('signedOutNote').hidden = !!me || !state.db || (state.authChecked && state.loaded);
     if (me) { $('meNick').textContent = me.nick; fillAv($('meAv'), avOf(state.uid)); }
+    $('adminTag').hidden = !(me && state.admin);
     const ready = state.db && state.authChecked && state.loaded;
     const needSecure = !!(ready && !state.uid && state.legacyUid && state.legacyNick);
     if (needSecure && $('securePanel').hidden) {
@@ -709,8 +801,22 @@ const SUPABASE_ANON_KEY = '__SUPABASE_ANON_KEY__';
 
   // Onay penceresi
   let lastFocus = null;
+  function openEditSheet(p) {
+    if (!state.admin) return;
+    lastFocus = document.activeElement;
+    state.editId = p.id;
+    const d = new Date(p.ts);
+    $('sheetTitle').textContent = p.by === state.uid ? 'Kaydını düzenle' : 'Kaydı düzenle · ' + nickOf(p.by);
+    $('sheetAt').value = toLocalInput(d);
+    $('sheetAt').hidden = false; $('sheetTime').hidden = true; $('editTime').hidden = true;
+    $('sheetNote').value = p.note || ''; $('noteCount').textContent = (p.note || '').length + '/200';
+    $('sheetSend').textContent = 'Kaydet'; $('sheetSend').disabled = false;
+    $('sheet').hidden = false; $('sheetAt').focus();
+  }
+
   function openSheet() {
     const editTime = false;
+    state.editId = null; $('sheetSend').textContent = 'Gönder';
     if (!state.db) return;
     if (!state.uid || !state.players[state.uid]) {
       if (!$('securePanel').hidden) { $('securePin').focus(); toast('Önce şifreni belirle.'); }
@@ -746,6 +852,10 @@ const SUPABASE_ANON_KEY = '__SUPABASE_ANON_KEY__';
     const before = summarize().counts.get(s) || 0;
     state.busy = true; $('sheetSend').disabled = true;
     try {
+      if (state.editId) {
+        await rpc('admin_update_pee', { p_token: state.token, p_id: state.editId, p_day: day, p_hour: hour, p_minute: minute, p_ts: date.getTime(), p_note: note || null });
+        state.editId = null; loadAll(); closeSheet(); toast('Kayıt güncellendi.'); return;
+      }
       await rpc('add_pee', { p_token: state.token, p_day: day, p_hour: hour, p_minute: minute, p_ts: date.getTime(), p_note: note || null });
       loadAll();
       closeSheet();
@@ -886,6 +996,7 @@ const SUPABASE_ANON_KEY = '__SUPABASE_ANON_KEY__';
     if (m.includes('gecersiz_sifre')) return 'Şifre 4 haneli bir sayı olmalı.';
     if (m.includes('gelecek_tarih')) return 'Geleceğe işeyemezsin.';
     if (m.includes('yetkisiz')) return 'Bu cihaz bir profile bağlı değil. Sayfayı yenile.';
+    if (m.includes('kendini_silemezsin')) return 'Kendi profilini silemezsin.';
     if (m.includes('cihaz_kayitli')) return 'Bu cihaz zaten bir profile bağlı. Sayfayı yenile.';
     return fallback;
   }
@@ -1012,6 +1123,7 @@ const SUPABASE_ANON_KEY = '__SUPABASE_ANON_KEY__';
         }
         if (!d) return;
         state.seq = Number(d.seq) || 0;
+        state.admin = d.admin === true;
         setPlayers(d.players);
         publishPees();
         state.loaded = true; state.playersLoaded = true;

@@ -56,6 +56,11 @@ create table if not exists public.devices (
   created_at timestamptz not null default now()
 );
 
+-- Yöneticiler (profil kimliği). Siteden okunamaz; yönetici SQL ile eklenir.
+create table if not exists public.admins (
+  player_id text primary key references public.players(id) on delete cascade
+);
+
 -- Erişim kuralları ------------------------------------------------------------
 
 alter table public.players enable row level security;
@@ -63,6 +68,7 @@ alter table public.pees enable row level security;
 alter table public.player_secrets enable row level security;
 alter table public.devices enable row level security;
 alter table public.pee_deletions enable row level security;
+alter table public.admins enable row level security;
 
 -- Tablolara doğrudan erişim tamamen kapalı. Okuma ve yazma yalnızca
 -- aşağıdaki fonksiyonlarla ve giriş yapmış bir cihazla yapılır.
@@ -73,7 +79,7 @@ drop policy if exists players_update on public.players;
 drop policy if exists pees_insert on public.pees;
 drop policy if exists pees_delete on public.pees;
 revoke all on public.players, public.pees from anon, authenticated;
-revoke all on public.player_secrets, public.devices, public.pee_deletions from anon, authenticated;
+revoke all on public.player_secrets, public.devices, public.pee_deletions, public.admins from anon, authenticated;
 revoke all on sequence public.sync_seq from anon, authenticated;
 
 -- Yardımcı fonksiyonlar (siteden çağrılamaz) ----------------------------------
@@ -97,6 +103,11 @@ begin
   if coalesce(p_pin, '') !~ '^[0-9]{4}$' then raise exception 'gecersiz_sifre'; end if;
 end $$;
 
+create or replace function public._admin_for(p_token text)
+returns text language sql stable security definer set search_path = ''
+as $$ select a.player_id from public.admins a where a.player_id = public._player_for(p_token) $$;
+
+revoke execute on function public._admin_for(text) from public, anon, authenticated;
 revoke execute on function public._token_hash(text) from public, anon, authenticated;
 revoke execute on function public._player_for(text) from public, anon, authenticated;
 revoke execute on function public._check_input(text, text) from public, anon, authenticated;
@@ -201,6 +212,7 @@ declare v_since bigint := greatest(coalesce(p_since, 0), 0);
 begin
   if public._player_for(p_token) is null then return null; end if;
   return jsonb_build_object(
+    'admin', public._admin_for(p_token) is not null,
     'seq', greatest(
       coalesce((select max(seq) from public.pees), 0),
       coalesce((select max(seq) from public.pee_deletions), 0)),
@@ -244,13 +256,70 @@ as $$
 declare v_player text := public._player_for(p_token);
 begin
   if v_player is null then raise exception 'yetkisiz'; end if;
-  delete from public.pees where id = p_id and player_id = v_player;
+  delete from public.pees where id = p_id and (player_id = v_player or public._admin_for(p_token) is not null);
   if found then
     insert into public.pee_deletions (pee_id) values (p_id);
     return true;
   end if;
   return false;
 end $$;
+
+-- Yönetici işlemleri --------------------------------------------------------
+
+create or replace function public.admin_update_pee(p_token text, p_id uuid, p_day int, p_hour int, p_minute int, p_ts bigint, p_note text)
+returns boolean language plpgsql security definer set search_path = ''
+as $$
+begin
+  if public._admin_for(p_token) is null then raise exception 'yetkisiz'; end if;
+  if p_ts > (extract(epoch from now()) * 1000)::bigint + 600000 then raise exception 'gelecek_tarih'; end if;
+  update public.pees
+    set day = p_day, hour = p_hour, minute = p_minute, ts = p_ts,
+        note = nullif(btrim(coalesce(p_note, '')), ''), seq = nextval('public.sync_seq')
+    where id = p_id;
+  return found;
+end $$;
+
+create or replace function public.admin_update_player(p_token text, p_player_id text, p_nick text, p_avatar text)
+returns boolean language plpgsql security definer set search_path = ''
+as $$
+begin
+  if public._admin_for(p_token) is null then raise exception 'yetkisiz'; end if;
+  update public.players set nick = btrim(p_nick), avatar = p_avatar, updated_at = now() where id = p_player_id;
+  return found;
+end $$;
+
+create or replace function public.admin_reset_pin(p_token text, p_player_id text, p_pin text)
+returns boolean language plpgsql security definer set search_path = ''
+as $$
+begin
+  if public._admin_for(p_token) is null then raise exception 'yetkisiz'; end if;
+  if coalesce(p_pin, '') !~ '^[0-9]{4}$' then raise exception 'gecersiz_sifre'; end if;
+  if not exists (select 1 from public.players where id = p_player_id) then return false; end if;
+  insert into public.player_secrets (player_id, pin_hash) values (p_player_id, extensions.crypt(p_pin, extensions.gen_salt('bf')))
+    on conflict (player_id) do update set pin_hash = excluded.pin_hash, failed_attempts = 0, locked_until = null;
+  return true;
+end $$;
+
+create or replace function public.admin_delete_player(p_token text, p_player_id text)
+returns boolean language plpgsql security definer set search_path = ''
+as $$
+declare v_admin text := public._admin_for(p_token);
+begin
+  if v_admin is null then raise exception 'yetkisiz'; end if;
+  if v_admin = p_player_id then raise exception 'kendini_silemezsin'; end if;
+  insert into public.pee_deletions (pee_id) select id from public.pees where player_id = p_player_id;
+  delete from public.players where id = p_player_id;
+  return found;
+end $$;
+
+revoke execute on function public.admin_update_pee(text, uuid, int, int, int, bigint, text) from public;
+revoke execute on function public.admin_update_player(text, text, text, text) from public;
+revoke execute on function public.admin_reset_pin(text, text, text) from public;
+revoke execute on function public.admin_delete_player(text, text) from public;
+grant execute on function public.admin_update_pee(text, uuid, int, int, int, bigint, text) to anon, authenticated;
+grant execute on function public.admin_update_player(text, text, text, text) to anon, authenticated;
+grant execute on function public.admin_reset_pin(text, text, text) to anon, authenticated;
+grant execute on function public.admin_delete_player(text, text) to anon, authenticated;
 
 revoke execute on function public.login(text, text, text) from public;
 revoke execute on function public.legacy_status(text) from public;
