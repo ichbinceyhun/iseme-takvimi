@@ -25,6 +25,20 @@ create table if not exists public.pees (
 create index if not exists pees_ts_idx on public.pees (ts);
 create index if not exists pees_player_idx on public.pees (player_id);
 
+-- Değişiklik sırası: site yalnızca son gördüğü numaradan sonrakileri çeker
+create sequence if not exists public.sync_seq;
+alter table public.pees add column if not exists seq bigint;
+alter table public.pees alter column seq set default nextval('public.sync_seq');
+update public.pees set seq = nextval('public.sync_seq') where seq is null;
+alter table public.pees alter column seq set not null;
+create index if not exists pees_seq_idx on public.pees (seq);
+
+create table if not exists public.pee_deletions (
+  seq bigint primary key default nextval('public.sync_seq'),
+  pee_id uuid not null,
+  deleted_at timestamptz not null default now()
+);
+
 -- Aynı isimde iki profil olmasın (büyük/küçük harf fark etmez)
 create unique index if not exists players_nick_unique on public.players (lower(btrim(nick)));
 
@@ -48,6 +62,7 @@ alter table public.players enable row level security;
 alter table public.pees enable row level security;
 alter table public.player_secrets enable row level security;
 alter table public.devices enable row level security;
+alter table public.pee_deletions enable row level security;
 
 -- Tablolara doğrudan erişim tamamen kapalı. Okuma ve yazma yalnızca
 -- aşağıdaki fonksiyonlarla ve giriş yapmış bir cihazla yapılır.
@@ -58,7 +73,8 @@ drop policy if exists players_update on public.players;
 drop policy if exists pees_insert on public.pees;
 drop policy if exists pees_delete on public.pees;
 revoke all on public.players, public.pees from anon, authenticated;
-revoke all on public.player_secrets, public.devices from anon, authenticated;
+revoke all on public.player_secrets, public.devices, public.pee_deletions from anon, authenticated;
+revoke all on sequence public.sync_seq from anon, authenticated;
 
 -- Yardımcı fonksiyonlar (siteden çağrılamaz) ----------------------------------
 
@@ -175,15 +191,25 @@ as $$
     and not exists (select 1 from public.player_secrets s where s.player_id = p.id)
 $$;
 
--- Giriş yapmış cihaz için bütün veriler
-create or replace function public.fetch_data(p_token text)
+-- Giriş yapmış cihaz için veriler. p_since verilirse yalnızca o numaradan
+-- sonraki eklemeler ve silmeler döner; değişiklik yoksa cevap çok küçüktür.
+drop function if exists public.fetch_data(text);
+create or replace function public.fetch_data(p_token text, p_since bigint default 0)
 returns jsonb language plpgsql stable security definer set search_path = ''
 as $$
+declare v_since bigint := greatest(coalesce(p_since, 0), 0);
 begin
   if public._player_for(p_token) is null then return null; end if;
   return jsonb_build_object(
+    'seq', greatest(
+      coalesce((select max(seq) from public.pees), 0),
+      coalesce((select max(seq) from public.pee_deletions), 0)),
+    'total', (select count(*) from public.pees),
     'players', coalesce((select jsonb_agg(jsonb_build_array(id, nick, avatar)) from public.players), '[]'::jsonb),
-    'pees', coalesce((select jsonb_agg(jsonb_build_array(id, player_id, day, hour, minute, ts, note)) from public.pees), '[]'::jsonb)
+    'pees', coalesce((select jsonb_agg(jsonb_build_array(id, player_id, day, hour, minute, ts, note))
+                      from public.pees where seq > v_since), '[]'::jsonb),
+    'deleted', case when v_since = 0 then '[]'::jsonb else
+      coalesce((select jsonb_agg(pee_id) from public.pee_deletions where seq > v_since), '[]'::jsonb) end
   );
 end $$;
 
@@ -219,15 +245,19 @@ declare v_player text := public._player_for(p_token);
 begin
   if v_player is null then raise exception 'yetkisiz'; end if;
   delete from public.pees where id = p_id and player_id = v_player;
-  return found;
+  if found then
+    insert into public.pee_deletions (pee_id) values (p_id);
+    return true;
+  end if;
+  return false;
 end $$;
 
 revoke execute on function public.login(text, text, text) from public;
 revoke execute on function public.legacy_status(text) from public;
-revoke execute on function public.fetch_data(text) from public;
+revoke execute on function public.fetch_data(text, bigint) from public;
 grant execute on function public.login(text, text, text) to anon, authenticated;
 grant execute on function public.legacy_status(text) to anon, authenticated;
-grant execute on function public.fetch_data(text) to anon, authenticated;
+grant execute on function public.fetch_data(text, bigint) to anon, authenticated;
 revoke execute on function public.whoami(text) from public;
 revoke execute on function public.register_player(text, text, text, text) from public;
 revoke execute on function public.secure_existing(text, text, text) from public;

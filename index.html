@@ -870,7 +870,7 @@ const SUPABASE_ANON_KEY = '__SUPABASE_ANON_KEY__';
   }
 
   function setMe(id) {
-    state.uid = id; state.legacyUid = null; state.legacyNick = null;
+    state.uid = id; state.legacyUid = null; state.legacyNick = null; state.seq = 0; peeMap = new Map();
     try { localStorage.removeItem('iseme-uid'); } catch (e) {}
   }
 
@@ -951,29 +951,73 @@ const SUPABASE_ANON_KEY = '__SUPABASE_ANON_KEY__';
     finally { state.busy = false; $('secureSend').disabled = false; render(); }
   });
 
+  // Kayıtlar telefonda da saklanır; sunucudan yalnızca son görülen numaradan sonraki değişiklikler istenir.
+  const CACHE_KEY = 'iseme-cache-v1';
+  let peeMap = new Map();
+  function toPee([id, by, day, hour, minute, ts, note]) {
+    return { id: String(id), by: String(by || ''), day: day | 0, hour: hour | 0, minute: minute | 0,
+      ts: Number(ts) || 0, note: typeof note === 'string' ? note.slice(0, 200) : '' };
+  }
+  function setPlayers(list) {
+    const m = {};
+    (list || []).forEach(([id, nick, avatar]) => {
+      if (typeof nick === 'string') m[id] = { nick: nick.slice(0, 24), avatar: typeof avatar === 'string' && AV[avatar] ? avatar : null };
+    });
+    state.players = m;
+  }
+  function publishPees() {
+    state.pees = [...peeMap.values()].filter((p) => p.day >= 0 && p.day < 7 && p.hour >= 0 && p.hour < 24);
+  }
+  function readCache() {
+    try {
+      const c = JSON.parse(localStorage.getItem(CACHE_KEY) || 'null');
+      if (!c || c.uid !== state.uid || !Array.isArray(c.pees)) return;
+      state.seq = Number(c.seq) || 0;
+      setPlayers(c.players);
+      peeMap = new Map(c.pees.map((r) => { const p = toPee(r); return [p.id, p]; }));
+      publishPees(); state.loaded = true; state.playersLoaded = true;
+    } catch (e) {}
+  }
+  function writeCache(players) {
+    try {
+      const pees = [...peeMap.values()].map((p) => [p.id, p.by, p.day, p.hour, p.minute, p.ts, p.note || null]);
+      localStorage.setItem(CACHE_KEY, JSON.stringify({ uid: state.uid, seq: state.seq, players, pees }));
+    } catch (e) {}
+  }
+
   let loading = null;
-  function loadAll() {
+  function loadAll(full) {
     if (!state.uid || !state.sb) return Promise.resolve();
     if (loading) return loading;
     loading = (async () => {
       try {
-        const d = await rpc('fetch_data', { p_token: state.token });
+        let since = full ? 0 : (state.seq || 0);
+        let d = await rpc('fetch_data', { p_token: state.token, p_since: since });
         if (!d) { // bu cihazın girişi geçersiz
-          state.uid = null; state.players = {}; state.pees = []; render(); return;
+          state.uid = null; state.players = {}; state.pees = []; peeMap = new Map(); state.seq = 0;
+          try { localStorage.removeItem(CACHE_KEY); } catch (e) {}
+          render(); return;
         }
-        const m = {};
-        (d.players || []).forEach(([id, nick, avatar]) => {
-          if (typeof nick === 'string') m[id] = { nick: nick.slice(0, 24), avatar: typeof avatar === 'string' && AV[avatar] ? avatar : null };
-        });
-        state.players = m;
-        state.pees = (d.pees || []).map(([id, by, day, hour, minute, ts, note]) => ({
-          id: String(id), by: String(by || ''), day: day | 0, hour: hour | 0, minute: minute | 0,
-          ts: Number(ts) || 0, note: typeof note === 'string' ? note.slice(0, 200) : '',
-        })).filter((p) => p.day >= 0 && p.day < 7 && p.hour >= 0 && p.hour < 24);
-        state.loaded = true; state.playersLoaded = true; state.loadFailed = false;
+        const apply = (data, from) => {
+          if (from === 0) peeMap = new Map();
+          (data.pees || []).forEach((r) => { const p = toPee(r); peeMap.set(p.id, p); });
+          (data.deleted || []).forEach((id) => peeMap.delete(String(id)));
+        };
+        apply(d, since);
+        // Sayılar tutmuyorsa (ör. araya kaçan bir değişiklik) bir kez baştan çek
+        if (since > 0 && peeMap.size !== Number(d.total)) {
+          since = 0;
+          d = await rpc('fetch_data', { p_token: state.token, p_since: 0 });
+          if (d) apply(d, 0);
+        }
+        if (!d) return;
+        state.seq = Number(d.seq) || 0;
+        setPlayers(d.players);
+        publishPees();
+        state.loaded = true; state.playersLoaded = true;
+        writeCache(d.players);
         render();
       } catch (e) {
-        state.loadFailed = true;
         if (!state.loaded) $('progressText').textContent = 'Kayıtlar yüklenemedi. Sayfayı yeniden açmayı dene.';
       } finally { loading = null; }
     })();
@@ -995,7 +1039,7 @@ const SUPABASE_ANON_KEY = '__SUPABASE_ANON_KEY__';
       }
     } catch (e) { showBanner('Sunucuya ulaşılamadı. Sayfayı yenile.'); return; }
     state.authChecked = true;
-    if (state.uid) await loadAll();
+    if (state.uid) { readCache(); render(); await loadAll(); }
     else { state.loaded = true; state.playersLoaded = true; render(); }
     setInterval(() => { if (document.visibilityState === 'visible') loadAll(); }, 30000);
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') loadAll(); });
