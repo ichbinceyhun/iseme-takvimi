@@ -658,7 +658,8 @@ const SUPABASE_ANON_KEY = '__SUPABASE_ANON_KEY__';
     const me = state.uid && state.players[state.uid];
     $('me').hidden = !me;
     if (me) { $('meNick').textContent = me.nick; fillAv($('meAv'), avOf(state.uid)); }
-    if (state.db && state.uid && state.loaded && state.canWrite && !me && $('nickPanel').hidden) openNickPanel(false);
+    if (state.db && state.uid && state.loaded && state.playersLoaded && state.canWrite && !me && $('nickPanel').hidden) openNickPanel(false);
+    if (me && !state.nickEdit && !$('nickPanel').hidden) $('nickPanel').hidden = true;
     $('peeNow').disabled = !state.db || !state.uid || !state.canWrite;
   }
 
@@ -767,6 +768,7 @@ const SUPABASE_ANON_KEY = '__SUPABASE_ANON_KEY__';
     $('nickTitle').textContent = edit ? 'Profilini düzenle' : 'Hoş geldin! Adını yaz, avatarını seç';
     $('nickSave').textContent = edit ? 'Kaydet' : 'Başla';
     $('nickCancel').hidden = !edit;
+    state.nickEdit = edit;
     $('nickInput').value = (me && me.nick) || '';
     state.pickAvatar = (me && AV[me.avatar] && me.avatar) || AVATARS[Math.floor(Math.random() * AVATARS.length)].id;
     renderPicker();
@@ -897,7 +899,7 @@ const SUPABASE_ANON_KEY = '__SUPABASE_ANON_KEY__';
     const timer = setTimeout(() => { if (!state.loaded) $('progressText').textContent = 'Kayıtlara henüz ulaşılamadı, bağlantını kontrol et.'; }, 10000);
     state.db.collection('players').onSnapshot((snap) => {
       const m = {}; snap.docs.forEach((d) => { const v = d.data(); if (v && typeof v.nick === 'string') m[d.id] = { nick: v.nick.slice(0, 24), avatar: typeof v.avatar === 'string' && AV[v.avatar] ? v.avatar : null }; });
-      state.players = m; render();
+      state.players = m; state.playersLoaded = true; render();
     }, () => {});
     state.db.collection('pees').onSnapshot((snap) => {
       state.pees = snap.docs.map((d) => {
