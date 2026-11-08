@@ -48,7 +48,7 @@ En zor kareler, tahmin edeceğin gibi, gece 03:00 ile 06:00 arası. Ekipte bir g
 ## Sıkça sorulan sorular
 
 **Bu bir şaka mı?**
-Evet. Ama veritabanı gayet ciddi.
+Evet. Ama database gayet ciddi.
 
 **Neden 4 kez?**
 1 kez çok kolaydı, 10 kez insanlık dışıydı. 4 tam kıvamında.
@@ -74,9 +74,8 @@ Her şey ücretsiz planlarla çalışıyor. Sunucu kodu yok: site tek bir HTML d
    select id from public.players where nick = 'Senin adın';
    ```
 
-6. Linki arkadaşlarına at ve sıvı tüketimini artır.
+6. Linki arkadaşlarına at ve bol su iç.
 
-> Türkiye'de bazı mobil operatörler `vercel.app` adreslerini açmayabiliyor. Wi-Fi'da çalışıp mobil veride açılmıyorsa sorun büyük ihtimalle bu. Kendi alan adını Vercel'e bağlamak çözüm olabilir.
 
 ## Nasıl çalışıyor?
 
@@ -93,4 +92,4 @@ Veri trafiği bilerek düşük tutuldu: kayıtlar telefonda saklanıyor, sunucud
 
 ## Teşekkürler
 
-Bir gece "GitHub tablosu gibi ama işeme için" diye başlayan fikir, [Claude](https://claude.ai) ile birlikte yazıldı. Test sürecinde birçok arkadaş gönüllü olarak işedi. Bazıları fazla gönüllüydü.
+Test sürecinde birçok arkadaş gönüllü olarak işedi. Bazıları fazla gönüllüydü.
