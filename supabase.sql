@@ -236,6 +236,11 @@ as $$
   )
 $$;
 
+-- Çıkış: bu cihazın profille bağlantısını sil
+create or replace function public.logout(p_token text)
+returns void language sql security definer set search_path = ''
+as $$ delete from public.devices where token_hash = public._token_hash(coalesce(p_token, '')) $$;
+
 -- Kendi profilini düzenle
 create or replace function public.update_profile(p_token text, p_nick text, p_avatar text)
 returns void language plpgsql security definer set search_path = ''
@@ -332,6 +337,8 @@ grant execute on function public.admin_update_player(text, text, text, text) to 
 grant execute on function public.admin_reset_pin(text, text, text) to anon, authenticated;
 grant execute on function public.admin_delete_player(text, text) to anon, authenticated;
 
+revoke execute on function public.logout(text) from public;
+grant execute on function public.logout(text) to anon, authenticated;
 revoke execute on function public.public_stats() from public;
 grant execute on function public.public_stats() to anon, authenticated;
 revoke execute on function public.login(text, text, text) from public;

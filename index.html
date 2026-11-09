@@ -280,7 +280,7 @@ textarea { resize: vertical; min-height: 84px; }
       <h1>İşeme Takvimi<span class="drop">.</span></h1>
       <p class="lede">Hedef: haftanın 168 saatinin her birini 4 kez işenmiş hale getirip tabloyu tamamen işemek. Pazartesi 15:15'te işediysen Pazartesi 15:00 karesi bir ton koyulaşır.</p>
     </div>
-    <div class="me" id="me" hidden><span class="av" id="meAv" aria-hidden="true"></span><b id="meNick"></b><span class="tag" id="adminTag" hidden>yönetici</span><button class="linkbtn" id="myProfile" type="button">profilim</button><button class="linkbtn" id="changeNick" type="button">düzenle</button></div>
+    <div class="me" id="me" hidden><span class="av" id="meAv" aria-hidden="true"></span><b id="meNick"></b><span class="tag" id="adminTag" hidden>yönetici</span><button class="linkbtn" id="myProfile" type="button">profilim</button><button class="linkbtn" id="changeNick" type="button">düzenle</button><button class="linkbtn" id="logoutBtn" type="button">çıkış yap</button></div>
   </header>
 
   <div class="banner" id="banner" hidden></div>
@@ -1225,6 +1225,32 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
     })();
     return loading;
   }
+
+  function resetDoor() {
+    $('door').classList.remove('open');
+    $('doorSign').textContent = 'DOLU'; $('doorSign').classList.remove('free');
+    $('doorCaption').textContent = 'İçeri girmek için kaydol ya da giriş yap.';
+  }
+
+  let logoutTimer = null;
+  $('logoutBtn').addEventListener('click', async () => {
+    const btn = $('logoutBtn');
+    if (!state.confirmLogout) {
+      state.confirmLogout = true; btn.textContent = 'emin misin?';
+      clearTimeout(logoutTimer);
+      logoutTimer = setTimeout(() => { state.confirmLogout = false; btn.textContent = 'çıkış yap'; }, 4000);
+      return;
+    }
+    clearTimeout(logoutTimer); state.confirmLogout = false; btn.textContent = 'çıkış yap';
+    try { await rpc('logout', { p_token: state.token }); } catch (e) {}
+    try { localStorage.removeItem('iseme-token'); localStorage.removeItem(CACHE_KEY); } catch (e) {}
+    state.token = deviceToken();
+    state.uid = null; state.admin = false; state.players = {}; state.pees = []; peeMap = new Map(); state.seq = 0;
+    state.profile = null; state.admFor = null; state.nickEdit = false; state.authMode = 'login';
+    $('sheet').hidden = true; $('nickPanel').hidden = true;
+    resetDoor(); render(); loadPublicStats();
+    window.scrollTo(0, 0); toast('Çıkış yaptın.');
+  });
 
   function countUp(el, to) {
     const fmtN = (n) => n.toLocaleString('tr-TR');
