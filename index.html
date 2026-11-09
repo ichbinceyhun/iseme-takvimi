@@ -85,13 +85,14 @@ body {
   gap: 18px;
 }
 header { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: 12px; }
+header > div:first-child { flex: 1 1 320px; min-width: 0; }
 h1 {
   font-family: var(--font-display); font-weight: 800; font-size: clamp(2rem, 6vw, 3.2rem);
   line-height: 1; letter-spacing: -0.02em; margin: 0; text-wrap: balance;
 }
 h1 .drop { color: var(--lv3); }
 .lede { margin: 6px 0 0; color: var(--muted); max-width: 62ch; }
-.me { font-size: 0.9rem; color: var(--muted); display: flex; gap: 8px; align-items: center; }
+.me { font-size: 0.9rem; color: var(--muted); display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px 10px; align-items: center; margin-left: auto; }
 .me b { color: var(--fg); font-weight: 600; }
 .linkbtn { background: none; border: 0; padding: 0; color: var(--fg); text-decoration: underline; text-underline-offset: 3px; cursor: pointer; font: inherit; }
 
