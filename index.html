@@ -420,9 +420,11 @@ textarea { resize: vertical; min-height: 84px; }
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.57.4/dist/umd/supabase.min.js"></script>
+<script src="config.js"></script>
 <script>
-const SUPABASE_URL = '__SUPABASE_URL__';
-const SUPABASE_ANON_KEY = '__SUPABASE_ANON_KEY__';
+// Supabase bilgileri yayın sırasında config.js'e yazılır (bkz. scripts/build.mjs)
+const SUPABASE_URL = (window.ISEME_CONFIG && window.ISEME_CONFIG.url) || '';
+const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || '';
 (function () {
   const DAYS = ['Pzt', 'Sal', 'Çar', 'Per', 'Cum', 'Cmt', 'Paz'];
   const DAYS_LONG = ['Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma', 'Cumartesi', 'Pazar'];

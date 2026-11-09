@@ -65,16 +65,19 @@ Her şey ücretsiz planlarla çalışıyor. Sunucu kodu yok: site tek bir HTML d
 
 1. **Depoyu forkla.**
 2. **Supabase:** [supabase.com](https://supabase.com)'da ücretsiz bir proje aç. **SQL Editor**'de [`supabase.sql`](supabase.sql) dosyasının içeriğini çalıştır.
-3. **Ayarlar:** Supabase'de **Project Settings → API** sayfasındaki proje adresini ve `publishable` (anon) anahtarını [`index.html`](index.html) içindeki `SUPABASE_URL` ve `SUPABASE_ANON_KEY` satırlarına yaz. Bu anahtar herkese açık olmak için tasarlanmış, gizli değil. `service_role` ya da `sb_secret_` ile başlayan anahtarı asla siteye koyma.
-4. **Vercel:** [vercel.com](https://vercel.com)'da **Add New → Project** ile forkladığın depoyu seç, hiçbir ayara dokunmadan **Deploy** de.
-5. **Kendini yönetici yap:** Sitede kaydolduktan sonra Supabase SQL Editor'de şunu çalıştır:
+3. **Vercel:** [vercel.com](https://vercel.com)'da **Add New → Project** ile forkladığın depoyu seç. **Environment Variables** bölümüne iki değişken ekle ve **Deploy** de:
+   - `SUPABASE_URL`: Supabase'de **Project Settings → API** sayfasındaki proje adresi
+   - `SUPABASE_ANON_KEY`: aynı sayfadaki `publishable` (anon) anahtar
+
+   Bu bilgiler depoda tutulmuyor, Vercel her yayında `config.js` dosyasına kendisi yazıyor. `service_role` ya da `sb_secret_` ile başlayan anahtarı asla kullanma.
+4. **Kendini yönetici yap:** Sitede kaydolduktan sonra Supabase SQL Editor'de şunu çalıştır:
 
    ```sql
    insert into public.admins (player_id)
    select id from public.players where nick = 'Senin adın';
    ```
 
-6. Linki arkadaşlarına at ve bol su iç.
+5. Linki arkadaşlarına at ve bol su iç.
 
 
 ## Nasıl çalışıyor?
