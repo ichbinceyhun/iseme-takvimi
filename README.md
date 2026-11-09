@@ -70,14 +70,20 @@ Her şey ücretsiz planlarla çalışıyor. Sunucu kodu yok: site tek bir HTML d
    - `SUPABASE_ANON_KEY`: aynı sayfadaki `publishable` (anon) anahtar
 
    Bu bilgiler depoda tutulmuyor, Vercel her yayında `config.js` dosyasına kendisi yazıyor. `service_role` ya da `sb_secret_` ile başlayan anahtarı asla kullanma.
-4. **Kendini yönetici yap:** Sitede kaydolduktan sonra Supabase SQL Editor'de şunu çalıştır:
+4. **İlk davet kodunu al:** Kayıt sadece davetle açık. İlk kodu Supabase SQL Editor'de öğren ve sitede kaydolurken yaz:
+
+   ```sql
+   select value from public.settings where key = 'invite_code';
+   ```
+
+5. **Kendini yönetici yap:** Kaydolduktan sonra SQL Editor'de şunu çalıştır:
 
    ```sql
    insert into public.admins (player_id)
    select id from public.players where nick = 'Senin adın';
    ```
 
-5. Linki arkadaşlarına at ve bol su iç.
+6. **Arkadaşlarını davet et:** Sitede **kumanda** paneline gir (ilk girişte en az 10 karakterli bir yönetici şifresi belirlersin), oradaki davet bağlantısını arkadaşlarına at ve bol su iç.
 
 
 ## Nasıl çalışıyor?

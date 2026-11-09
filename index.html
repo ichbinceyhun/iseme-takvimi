@@ -340,6 +340,11 @@ textarea { resize: vertical; min-height: 84px; }
         <span class="label" id="avLabel">Avatarın</span>
         <div class="avgrid" id="avGrid" role="group" aria-labelledby="avLabel"></div>
       </div>
+      <div style="display:grid;gap:6px" id="inviteRow">
+        <label class="label" for="inviteInput">Davet kodu</label>
+        <input id="inviteInput" maxlength="16" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="Yöneticiden aldığın kod" style="max-width:14rem;font-family:var(--font-mono);letter-spacing:.12em">
+        <p class="hint" style="margin:0" id="inviteHint">Kaydolmak için davet bağlantısı ya da kodu gerekiyor.</p>
+      </div>
       <div style="display:grid;gap:6px" id="pinRow">
         <label class="label" for="pinInput">4 haneli şifre</label>
         <input id="pinInput" type="password" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="new-password" placeholder="••••" style="max-width:9rem;font-family:var(--font-mono);letter-spacing:.35em">
@@ -421,6 +426,15 @@ textarea { resize: vertical; min-height: 84px; }
           </div>
         </div>
         <div class="kv" id="admStats"></div>
+        <div style="display:grid;gap:8px;margin-top:16px">
+          <span class="label">Davet bağlantısı</span>
+          <p class="hint" style="margin:0">Sadece bu bağlantıyla gelenler kaydolabilir. Linki arkadaşlarına sen at. Yeni bağlantı oluşturursan eskisi çalışmaz olur.</p>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            <input id="admInvite" readonly aria-label="Davet bağlantısı" style="flex:1 1 260px;font-family:var(--font-mono);font-size:.82rem">
+            <button class="ghost" type="button" id="admInviteCopy">Kopyala</button>
+            <button class="ghost" type="button" id="admInviteNew">Yeni bağlantı oluştur</button>
+          </div>
+        </div>
         <details style="margin-top:14px">
           <summary class="label" style="cursor:pointer">Yönetici şifresini değiştir</summary>
           <form id="admChangeForm" style="display:grid;gap:8px;margin-top:10px">
@@ -448,6 +462,7 @@ textarea { resize: vertical; min-height: 84px; }
             <option value="visit">Siteyi açmalar</option>
             <option value="admin_any">Yönetici işlemleri</option>
             <option value="register">Kayıt olmalar</option>
+            <option value="register_fail">Davetsiz kayıt denemeleri</option>
             <option value="logout">Çıkışlar</option>
           </select>
         </div>
@@ -588,7 +603,7 @@ textarea { resize: vertical; min-height: 84px; }
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.57.4/dist/umd/supabase.min.js"></script>
+<script src="vendor/supabase-js-2.57.4.js"></script>
 <script src="config.js"></script>
 <script>
 // Supabase bilgileri yayın sırasında config.js'e yazılır (bkz. scripts/build.mjs)
@@ -1009,6 +1024,8 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
     $('sheetTitle').textContent = editTime ? 'Ne zaman işedin?' : 'İşedim';
     $('sheetTime').textContent = 'bugün ' + hm(now);
     $('sheetAt').value = toLocalInput(now);
+    $('sheetAt').max = toLocalInput(now);
+    $('sheetAt').min = toLocalInput(new Date(now.getTime() - 7 * 864e5 + 6e4));
     $('sheetAt').hidden = !editTime; $('sheetTime').hidden = editTime; $('editTime').hidden = editTime;
     $('sheetNote').value = ''; $('noteCount').textContent = '0/200';
     $('sheetSend').disabled = false;
@@ -1101,6 +1118,7 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
     $('nickSave').textContent = edit ? 'Kaydet' : 'Başla';
     $('nickCancel').hidden = !edit;
     $('pinRow').hidden = edit; $('pinInput').value = '';
+    if (edit) $('inviteRow').hidden = true; else renderInviteRow();
     state.nickEdit = edit;
     $('nickInput').value = (me && me.nick) || '';
     state.pickAvatar = (me && AV[me.avatar] && me.avatar) || AVATARS[Math.floor(Math.random() * AVATARS.length)].id;
@@ -1114,8 +1132,9 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
   $('nickForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     if (state.busy || !state.db) return;
-    const nick = $('nickInput').value.trim().slice(0, 24);
+    const nick = $('nickInput').value.trim().replace(/\s+/g, ' ').slice(0, 24);
     if (!nick) return;
+    if (!NICK_RE.test(nick)) { toast("Adda sadece harf, rakam, boşluk ve . ' _ - kullanılabilir."); $('nickInput').focus(); return; }
     const avatar = AV[state.pickAvatar] ? state.pickAvatar : AVATARS[0].id;
     const isNew = !state.uid || !state.players[state.uid];
     const key = nick.toLocaleLowerCase('tr');
@@ -1129,8 +1148,24 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
     state.busy = true; $('nickSave').disabled = true;
     try {
       if (isNew) {
-        const id = await rpc('register_player', { p_token: state.token, p_nick: nick, p_avatar: avatar, p_pin: pin });
-        setMe(id);
+        const invite = ($('inviteInput').value || getInvite() || '').trim();
+        if (!invite) { toast('Davet kodunu yaz.'); $('inviteRow').hidden = false; $('inviteInput').focus(); return; }
+        const r = await rpc('register_player', { p_token: state.token, p_nick: nick, p_avatar: avatar, p_pin: pin, p_invite: invite }) || {};
+        if (!r.ok) {
+          if (r.reason === 'davet_gecersiz') {
+            setInvite(null); $('inviteRow').hidden = false; $('inviteInput').value = '';
+            $('inviteHint').textContent = 'Bu davet geçersiz ya da eskimiş. Yöneticiden yeni bağlantı iste.';
+            toast('Davet kodu geçersiz.');
+          } else toast(({
+            isim_alinmis: "Bu isim alınmış. Senin hesabınsa Giriş yap'a geç.",
+            gecersiz_ad: "Adda sadece harf, rakam, boşluk ve . ' _ - kullanılabilir.",
+            cok_fazla_istek: 'Çok fazla deneme oldu. Biraz sonra tekrar dene.',
+            cihaz_kayitli: 'Bu cihaz zaten bir profile bağlı. Sayfayı yenile.',
+          })[r.reason] || 'Kaydedemedim, tekrar dene.');
+          return;
+        }
+        setInvite(null);
+        setMe(r.id);
       } else {
         await rpc('update_profile', { p_token: state.token, p_nick: nick, p_avatar: avatar });
       }
@@ -1147,6 +1182,23 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
     state.feed = b.dataset.feed; try { localStorage.setItem('it-feed', state.feed); } catch (e) {} render();
   }));
   // ---------------- Kumanda paneli ----------------
+  const NICK_RE = /^[A-Za-z0-9ÇĞİÖŞÜçğıöşüÂâÎîÛûÊêÔô .'_-]{1,24}$/;
+  function getInvite() { try { return localStorage.getItem('iseme-invite'); } catch (e) { return null; } }
+  function setInvite(v) { try { if (v) localStorage.setItem('iseme-invite', v); else localStorage.removeItem('iseme-invite'); } catch (e) {} }
+  (function readInviteFromUrl() {
+    const q = new URLSearchParams(location.search);
+    const code = (q.get('davet') || '').trim();
+    if (code) {
+      setInvite(code.toUpperCase());
+      q.delete('davet');
+      const rest = q.toString();
+      history.replaceState(null, '', location.pathname + (rest ? '?' + rest : '') + location.hash);
+    }
+  })();
+  function renderInviteRow() {
+    const has = !!getInvite();
+    $('inviteRow').hidden = has;
+  }
   const ADM_KEY = 'iseme-admin-session';
   state.admSession = null;
   try { state.admSession = sessionStorage.getItem(ADM_KEY) || null; } catch (e) {}
@@ -1167,9 +1219,9 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
     profile_update: 'Profilini düzenledi', pee_add: 'İşeme ekledi', pee_delete: 'İşemesini sildi',
     admin_login_ok: 'Panele girdi', admin_login_fail: 'Panele hatalı giriş', admin_password_set: 'Yönetici şifresini belirledi',
     admin_pee_update: 'Kayıt düzenledi', admin_pee_delete: 'Kayıt sildi', admin_player_update: 'Profil düzenledi',
-    admin_pin_reset: 'Şifre sıfırladı', admin_devices_revoke: 'Cihazlardan çıkardı', admin_player_delete: 'Profil sildi',
+    admin_pin_reset: 'Şifre sıfırladı', admin_invite_rotate: 'Davet bağlantısını yeniledi', register_fail: 'Davetsiz kayıt denemesi', admin_devices_revoke: 'Cihazlardan çıkardı', admin_player_delete: 'Profil sildi',
   };
-  const BAD_EVENTS = ['login_fail', 'login_locked', 'admin_login_fail'];
+  const BAD_EVENTS = ['login_fail', 'login_locked', 'admin_login_fail', 'register_fail'];
   function slotTxt(d) { return d && d.gun != null ? DAYS[d.gun] + ' ' + pad(d.saat) + ':' + pad(d.dakika) : ''; }
   function describe(ev, d) {
     d = d || {};
@@ -1178,6 +1230,7 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
       case 'pee_add': case 'pee_delete': return slotTxt(d) + note;
       case 'login_fail': return d.reason === 'isim_yok' ? '"' + (d.nick || '') + '" adında kimse yok' : 'Yanlış şifre';
       case 'login_locked': return 'Profil kilitliyken denendi';
+      case 'register_fail': return d.nick ? '"' + d.nick + '" adıyla, geçersiz davetle' : 'Geçersiz davetle';
       case 'profile_update': case 'admin_player_update':
         return (d.eski_ad && d.eski_ad !== d.yeni_ad) ? d.eski_ad + ' → ' + d.yeni_ad : 'Avatar değişti';
       case 'admin_pee_update':
@@ -1271,6 +1324,7 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
       } else if (r.reason === 'kilitli') {
         toast('Çok fazla yanlış deneme. ' + (r.until ? hm(new Date(r.until)) + "'dan sonra" : 'Daha sonra') + ' tekrar dene.');
       } else if (r.reason === 'sifre_yok') { showAdminGate(); }
+      else if (r.reason === 'yavas') toast('Çok fazla hatalı deneme. 15 dakika sonra tekrar dene.');
       else toast('Şifre yanlış.');
     } catch (err) { toast(errText(err, 'Giriş yapılamadı.')); }
     finally { state.busy = false; $('admLoginSend').disabled = false; }
@@ -1291,8 +1345,31 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
   });
 
   let admPlayers = []; let admOpenId = null; let logRows = []; let logDone = false;
+  async function loadInvite(rotate) {
+    try {
+      const code = await adminRpc('admin_invite', { p_rotate: !!rotate });
+      $('admInvite').value = location.origin + location.pathname + '?davet=' + encodeURIComponent(code || '');
+      if (rotate) toast('Yeni davet bağlantısı oluşturuldu. Eskisi artık çalışmıyor.');
+    } catch (err) { toast(errText(err, 'Davet bağlantısı alınamadı.')); }
+  }
+  $('admInviteCopy').addEventListener('click', async () => {
+    const v = $('admInvite').value; if (!v) return;
+    try { await navigator.clipboard.writeText(v); toast('Bağlantı kopyalandı.'); }
+    catch (e) { $('admInvite').select(); toast('Bağlantıyı seçtim, kopyala.'); }
+  });
+  $('admInviteNew').addEventListener('click', () => {
+    if (!state.inviteConfirm) {
+      state.inviteConfirm = true; $('admInviteNew').textContent = 'Emin misin? Eski link bozulur';
+      setTimeout(() => { state.inviteConfirm = false; $('admInviteNew').textContent = 'Yeni bağlantı oluştur'; }, 4000);
+      return;
+    }
+    state.inviteConfirm = false; $('admInviteNew').textContent = 'Yeni bağlantı oluştur';
+    loadInvite(true);
+  });
+
   async function loadAdmin() {
     $('admGate').hidden = true; $('admPanel').hidden = false;
+    loadInvite(false);
     try {
       const o = await adminRpc('admin_overview', {});
       admPlayers = o.players || [];
@@ -1453,6 +1530,9 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
     if (m.includes('players_nick_unique')) return state.uid ? 'Bu isim alınmış, başka bir isim seç.' : "Bu isim alınmış. Senin hesabınsa Giriş yap'a geç.";
     if (m.includes('gecersiz_sifre')) return 'Şifre 4 haneli bir sayı olmalı.';
     if (m.includes('gelecek_tarih')) return 'Geleceğe işeyemezsin.';
+    if (m.includes('eski_tarih')) return 'En fazla 7 gün öncesine kayıt girebilirsin.';
+    if (m.includes('cok_hizli')) return 'Bu kadar sık işenmez. Biraz bekle.';
+    if (m.includes('gecersiz_ad')) return "Adda sadece harf, rakam, boşluk ve . ' _ - kullanılabilir.";
     if (m.includes('yetkisiz')) return 'Bu cihaz bir profile bağlı değil. Sayfayı yenile.';
     if (m.includes('kendini_silemezsin')) return 'Kendi profilini silemezsin.';
     if (m.includes('yonetici_oturumu')) { endAdminSession(); return 'Panel oturumu kapandı. Kumanda panelinden tekrar gir.'; }
@@ -1496,6 +1576,8 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
         toast('Çok fazla yanlış deneme. ' + (until ? hm(until) + "'dan sonra" : 'Daha sonra') + ' tekrar dene.');
       } else if (r.reason === 'sifresiz') {
         toast('Bu profilin henüz şifresi yok. Önce kendi telefonundan girip şifre belirlemeli.');
+      } else if (r.reason === 'yavas') {
+        toast('Bu bağlantıdan çok fazla hatalı deneme yapıldı. 15 dakika sonra tekrar dene.');
       } else {
         $('claimPin').value = '';
         toast('Ad ya da şifre yanlış.');

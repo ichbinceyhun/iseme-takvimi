@@ -90,6 +90,17 @@ create table if not exists public.audit_log (
   device text
 );
 create index if not exists audit_log_at_idx on public.audit_log (at);
+create index if not exists audit_log_event_ip_idx on public.audit_log (event, ip, at);
+create index if not exists audit_log_event_player_idx on public.audit_log (event, player_id, at);
+
+-- Site ayarları (davet kodu). Siteden okunamaz.
+create table if not exists public.settings (
+  key text primary key,
+  value text not null
+);
+insert into public.settings (key, value)
+  values ('invite_code', upper(encode(extensions.gen_random_bytes(5), 'hex')))
+  on conflict (key) do nothing;
 create index if not exists audit_log_player_idx on public.audit_log (player_id, id);
 
 -- Erişim kuralları ------------------------------------------------------------
@@ -102,6 +113,7 @@ alter table public.pee_deletions enable row level security;
 alter table public.admins enable row level security;
 alter table public.admin_sessions enable row level security;
 alter table public.audit_log enable row level security;
+alter table public.settings enable row level security;
 
 -- Tablolara doğrudan erişim tamamen kapalı. Okuma ve yazma yalnızca
 -- aşağıdaki fonksiyonlarla ve giriş yapmış bir cihazla yapılır.
@@ -113,7 +125,7 @@ drop policy if exists pees_insert on public.pees;
 drop policy if exists pees_delete on public.pees;
 revoke all on public.players, public.pees from anon, authenticated;
 revoke all on public.player_secrets, public.devices, public.pee_deletions, public.admins,
-  public.admin_sessions, public.audit_log from anon, authenticated;
+  public.admin_sessions, public.audit_log, public.settings from anon, authenticated;
 revoke all on sequence public.sync_seq from anon, authenticated;
 revoke all on sequence public.audit_log_id_seq from anon, authenticated;
 
@@ -122,6 +134,7 @@ drop function if exists public.admin_update_pee(text, uuid, int, int, int, bigin
 drop function if exists public.admin_update_player(text, text, text, text);
 drop function if exists public.admin_reset_pin(text, text, text);
 drop function if exists public.admin_delete_player(text, text);
+drop function if exists public.register_player(text, text, text, text);
 
 -- Yardımcı fonksiyonlar (siteden çağrılamaz) ----------------------------------
 
@@ -205,6 +218,39 @@ begin
   return v;
 end $$;
 
+-- Bu IP'den son p_window içinde p_events olaylarından kaç tane yazıldı?
+create or replace function public._ip_count(p_events text[], p_window interval)
+returns int language sql stable security definer set search_path = ''
+as $$
+  select count(*)::int from public.audit_log
+  where event = any(p_events) and ip = public._req('ip') and at > now() - p_window
+$$;
+
+-- Bu kişi için son p_window içinde p_event olayından kaç tane yazıldı?
+create or replace function public._player_count(p_event text, p_player text, p_window interval)
+returns int language sql stable security definer set search_path = ''
+as $$
+  select count(*)::int from public.audit_log
+  where event = p_event and player_id = p_player and at > now() - p_window
+$$;
+
+-- Ad kuralı: Türkçe harfler, rakamlar, boşluk ve . ' _ - (taklit ve görünmez karakterlere karşı)
+create or replace function public._nick_ok(p_nick text)
+returns boolean language sql immutable set search_path = ''
+as $$ select coalesce(btrim(p_nick), '') ~ '^[A-Za-z0-9ÇĞİÖŞÜçğıöşüÂâÎîÛûÊêÔô .''''_-]{1,24}$' and btrim(p_nick) !~ '  ' $$;
+
+-- Kayıt zamanından İstanbul saatine göre gün (Pzt=0), saat ve dakika
+create or replace function public._slot(p_ts bigint, out day int, out hour int, out minute int)
+language sql immutable set search_path = ''
+as $$
+  select (extract(isodow from l)::int - 1), extract(hour from l)::int, extract(minute from l)::int
+  from (select (to_timestamp(p_ts / 1000.0) at time zone 'Europe/Istanbul') as l) x
+$$;
+
+revoke execute on function public._ip_count(text[], interval) from public, anon, authenticated;
+revoke execute on function public._player_count(text, text, interval) from public, anon, authenticated;
+revoke execute on function public._nick_ok(text) from public, anon, authenticated;
+revoke execute on function public._slot(bigint) from public, anon, authenticated;
 revoke execute on function public._admin_for(text) from public, anon, authenticated;
 revoke execute on function public._token_hash(text) from public, anon, authenticated;
 revoke execute on function public._player_for(text) from public, anon, authenticated;
@@ -233,22 +279,39 @@ begin
   return v_player;
 end $$;
 
--- Yeni profil: ad + avatar + 4 haneli şifre
-create or replace function public.register_player(p_token text, p_nick text, p_avatar text, p_pin text)
-returns text language plpgsql security definer set search_path = ''
+-- Yeni profil: ad + avatar + 4 haneli şifre + davet kodu.
+-- Sonuç: {ok:true,id} ya da {ok:false,reason}. Reddedilen denemeler de kaydedilir.
+create or replace function public.register_player(p_token text, p_nick text, p_avatar text, p_pin text, p_invite text)
+returns jsonb language plpgsql security definer set search_path = ''
 as $$
-declare v_id text := gen_random_uuid()::text;
+declare v_id text := gen_random_uuid()::text; v_code text;
 begin
   perform public._check_input(p_token, p_pin);
-  if exists (select 1 from public.devices where token_hash = public._token_hash(p_token)) then
-    raise exception 'cihaz_kayitli';
+  if public._ip_count(array['register', 'register_fail'], interval '1 hour') >= 5
+     or (select count(*) from public.audit_log where event = 'register' and at > now() - interval '1 hour') >= 30 then
+    return jsonb_build_object('ok', false, 'reason', 'cok_fazla_istek');
   end if;
-  insert into public.players (id, nick, avatar) values (v_id, btrim(p_nick), p_avatar);
+  select value into v_code from public.settings where key = 'invite_code';
+  if v_code is null or upper(btrim(coalesce(p_invite, ''))) <> v_code then
+    perform public._log('register_fail', null, p_token, jsonb_build_object('reason', 'davet', 'nick', left(coalesce(p_nick, ''), 40)));
+    return jsonb_build_object('ok', false, 'reason', 'davet_gecersiz');
+  end if;
+  if not public._nick_ok(p_nick) then
+    return jsonb_build_object('ok', false, 'reason', 'gecersiz_ad');
+  end if;
+  if exists (select 1 from public.devices where token_hash = public._token_hash(p_token)) then
+    return jsonb_build_object('ok', false, 'reason', 'cihaz_kayitli');
+  end if;
+  begin
+    insert into public.players (id, nick, avatar) values (v_id, btrim(p_nick), p_avatar);
+  exception when unique_violation then
+    return jsonb_build_object('ok', false, 'reason', 'isim_alinmis');
+  end;
   insert into public.player_secrets (player_id, pin_hash) values (v_id, extensions.crypt(p_pin, extensions.gen_salt('bf')));
   insert into public.devices (token_hash, player_id, last_seen, last_ip, last_ua)
     values (public._token_hash(p_token), v_id, now(), public._req('ip'), public._req('ua'));
   perform public._log('register', v_id, p_token, jsonb_build_object('avatar', p_avatar));
-  return v_id;
+  return jsonb_build_object('ok', true, 'id', v_id);
 end $$;
 
 -- Şifre sisteminden önce açılmış profile ilk kez şifre koymak (yalnızca şifresi yoksa)
@@ -304,6 +367,9 @@ returns jsonb language plpgsql security definer set search_path = ''
 as $$
 declare v_id text; r jsonb;
 begin
+  if public._ip_count(array['login_fail', 'login_locked'], interval '15 minutes') >= 20 then
+    return jsonb_build_object('ok', false, 'reason', 'yavas');
+  end if;
   select id into v_id from public.players
     where lower(translate(btrim(nick), 'İIı', 'iii')) = lower(translate(btrim(coalesce(p_nick, '')), 'İIı', 'iii'))
     limit 1;
@@ -382,26 +448,34 @@ as $$
 declare v_player text := public._player_for(p_token); v_old text;
 begin
   if v_player is null then raise exception 'yetkisiz'; end if;
+  if not public._nick_ok(p_nick) then raise exception 'gecersiz_ad'; end if;
   select nick into v_old from public.players where id = v_player;
   update public.players set nick = btrim(p_nick), avatar = p_avatar, updated_at = now() where id = v_player;
   perform public._log('profile_update', v_player, p_token,
     jsonb_build_object('eski_ad', v_old, 'yeni_ad', btrim(p_nick), 'avatar', p_avatar));
 end $$;
 
--- İşeme ekle (yalnızca kendi adına)
+-- İşeme ekle (yalnızca kendi adına). Gün/saat/dakika kayıt zamanından sunucuda hesaplanır;
+-- sitenin gönderdiği değerler yok sayılır. En fazla 7 gün geriye; kişi başına dakikada 2, saatte 12.
 create or replace function public.add_pee(p_token text, p_day int, p_hour int, p_minute int, p_ts bigint, p_note text)
 returns uuid language plpgsql security definer set search_path = ''
 as $$
-declare v_player text := public._player_for(p_token); v_id uuid;
+declare v_player text := public._player_for(p_token); v_id uuid; v record; v_now bigint := (extract(epoch from now()) * 1000)::bigint;
 begin
   if v_player is null then raise exception 'yetkisiz'; end if;
-  if p_ts > (extract(epoch from now()) * 1000)::bigint + 600000 then raise exception 'gelecek_tarih'; end if;
+  if p_ts is null or p_ts > v_now + 600000 then raise exception 'gelecek_tarih'; end if;
+  if p_ts < v_now - 7 * 86400000 then raise exception 'eski_tarih'; end if;
+  if public._player_count('pee_add', v_player, interval '1 minute') >= 2
+     or public._player_count('pee_add', v_player, interval '1 hour') >= 12 then
+    raise exception 'cok_hizli';
+  end if;
+  select * into v from public._slot(p_ts);
   insert into public.pees (player_id, day, hour, minute, ts, note)
-    values (v_player, p_day, p_hour, p_minute, p_ts, nullif(btrim(coalesce(p_note, '')), ''))
+    values (v_player, v.day, v.hour, v.minute, p_ts, nullif(btrim(left(coalesce(p_note, ''), 200)), ''))
     returning id into v_id;
   perform public._log('pee_add', v_player, p_token,
-    jsonb_build_object('kayit', v_id, 'gun', p_day, 'saat', p_hour, 'dakika', p_minute, 'ts', p_ts,
-                       'not', nullif(btrim(coalesce(p_note, '')), '')));
+    jsonb_build_object('kayit', v_id, 'gun', v.day, 'saat', v.hour, 'dakika', v.minute, 'ts', p_ts,
+                       'not', nullif(btrim(left(coalesce(p_note, ''), 200)), '')));
   return v_id;
 end $$;
 
@@ -458,6 +532,9 @@ returns jsonb language plpgsql security definer set search_path = ''
 as $$
 declare v_admin text := public._admin_for(p_token); a public.admins%rowtype; v_session text;
 begin
+  if public._ip_count(array['admin_login_fail'], interval '15 minutes') >= 10 then
+    return jsonb_build_object('ok', false, 'reason', 'yavas');
+  end if;
   if v_admin is null then
     perform public._log('admin_login_fail', public._player_for(p_token), p_token, jsonb_build_object('reason', 'yonetici_degil'));
     return jsonb_build_object('ok', false, 'reason', 'yetkisiz');
@@ -572,11 +649,14 @@ end $$;
 create or replace function public.admin_update_pee(p_token text, p_session text, p_id uuid, p_day int, p_hour int, p_minute int, p_ts bigint, p_note text)
 returns boolean language plpgsql security definer set search_path = ''
 as $$
-declare v_admin text := public._admin_ok(p_token, p_session); r public.pees%rowtype;
+declare v_admin text := public._admin_ok(p_token, p_session); r public.pees%rowtype; v record;
 begin
-  if p_ts > (extract(epoch from now()) * 1000)::bigint + 600000 then raise exception 'gelecek_tarih'; end if;
+  if p_ts is null or p_ts > (extract(epoch from now()) * 1000)::bigint + 600000 then raise exception 'gelecek_tarih'; end if;
+  if p_ts < (extract(epoch from now()) * 1000)::bigint - 365 * 86400000::bigint then raise exception 'eski_tarih'; end if;
   select * into r from public.pees where id = p_id;
   if not found then return false; end if;
+  select * into v from public._slot(p_ts);
+  p_day := v.day; p_hour := v.hour; p_minute := v.minute;
   update public.pees
     set day = p_day, hour = p_hour, minute = p_minute, ts = p_ts,
         note = nullif(btrim(coalesce(p_note, '')), ''), seq = nextval('public.sync_seq')
@@ -607,6 +687,7 @@ returns boolean language plpgsql security definer set search_path = ''
 as $$
 declare v_admin text := public._admin_ok(p_token, p_session); v_old text;
 begin
+  if not public._nick_ok(p_nick) then raise exception 'gecersiz_ad'; end if;
   select nick into v_old from public.players where id = p_player_id;
   if not found then return false; end if;
   update public.players set nick = btrim(p_nick), avatar = p_avatar, updated_at = now() where id = p_player_id;
@@ -658,6 +739,22 @@ begin
   return true;
 end $$;
 
+-- Davet kodunu göster; p_rotate ise yenisini üret (eski bağlantı çalışmaz olur)
+create or replace function public.admin_invite(p_token text, p_session text, p_rotate boolean default false)
+returns text language plpgsql security definer set search_path = ''
+as $$
+declare v_admin text := public._admin_ok(p_token, p_session); v_code text;
+begin
+  if p_rotate then
+    v_code := upper(encode(extensions.gen_random_bytes(5), 'hex'));
+    insert into public.settings (key, value) values ('invite_code', v_code)
+      on conflict (key) do update set value = excluded.value;
+    perform public._log('admin_invite_rotate', v_admin, p_token);
+  end if;
+  select value into v_code from public.settings where key = 'invite_code';
+  return v_code;
+end $$;
+
 -- Yetkiler -------------------------------------------------------------------
 
 do $$
@@ -665,7 +762,8 @@ declare f text;
 begin
   foreach f in array array[
     'whoami(text)',
-    'register_player(text, text, text, text)',
+    'register_player(text, text, text, text, text)',
+    'admin_invite(text, text, boolean)',
     'secure_existing(text, text, text)',
     'login(text, text, text)',
     'legacy_status(text)',
