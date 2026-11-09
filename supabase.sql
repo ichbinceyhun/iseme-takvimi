@@ -225,6 +225,17 @@ begin
   );
 end $$;
 
+-- Giriş ekranındaki canlı sayaç: yalnızca toplamlar, kimin ne zaman işediği görünmez
+create or replace function public.public_stats()
+returns jsonb language sql stable security definer set search_path = ''
+as $$
+  select jsonb_build_object(
+    'pees', (select count(*) from public.pees),
+    'players', (select count(*) from public.players),
+    'points', (select coalesce(sum(least(c, 4)), 0) from (select count(*) as c from public.pees group by day, hour) t)
+  )
+$$;
+
 -- Kendi profilini düzenle
 create or replace function public.update_profile(p_token text, p_nick text, p_avatar text)
 returns void language plpgsql security definer set search_path = ''
@@ -321,6 +332,8 @@ grant execute on function public.admin_update_player(text, text, text, text) to 
 grant execute on function public.admin_reset_pin(text, text, text) to anon, authenticated;
 grant execute on function public.admin_delete_player(text, text) to anon, authenticated;
 
+revoke execute on function public.public_stats() from public;
+grant execute on function public.public_stats() to anon, authenticated;
 revoke execute on function public.login(text, text, text) from public;
 revoke execute on function public.legacy_status(text) from public;
 revoke execute on function public.fetch_data(text, bigint) from public;

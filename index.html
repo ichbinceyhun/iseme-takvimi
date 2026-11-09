@@ -32,6 +32,12 @@
   --ring: #14232a;
   --danger: #b4321f;
   --scrim: rgba(10, 20, 25, 0.45);
+  --door: #c9d9df;
+  --door-panel: #b7cad1;
+  --door-frame: #8ea3ab;
+  --knob: #b98200;
+  --sign-busy: #c8372d;
+  --sign-free: #2b9457;
   --font-display: "Bricolage Grotesque", "Rubik", system-ui, sans-serif;
   --font-body: "Rubik", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
@@ -42,6 +48,7 @@
     --line: #253740; --empty: #1f2e35; --lv1: #4d4313; --lv2: #8c7315; --lv3: #cfa419; --lv4: #ffd43f;
     --btn: #f5cf3a; --btn-fg: #2a2000; --btn-hover: #ffdc55; --ring: #e6eef0; --danger: #ff7a63;
     --scrim: rgba(0, 0, 0, 0.6);
+    --door: #2b3d45; --door-panel: #24343b; --door-frame: #43575f; --knob: #ffd43f;
     color-scheme: dark;
   }
 }
@@ -50,6 +57,7 @@
   --line: #253740; --empty: #1f2e35; --lv1: #4d4313; --lv2: #8c7315; --lv3: #cfa419; --lv4: #ffd43f;
   --btn: #f5cf3a; --btn-fg: #2a2000; --btn-hover: #ffdc55; --ring: #e6eef0; --danger: #ff7a63;
   --scrim: rgba(0, 0, 0, 0.6);
+  --door: #2b3d45; --door-panel: #24343b; --door-frame: #43575f; --knob: #ffd43f;
   color-scheme: dark;
 }
 html, body { margin: 0; }
@@ -221,6 +229,39 @@ textarea { resize: vertical; min-height: 84px; }
 .avopt[aria-pressed="true"] .n { color: var(--btn-fg); font-weight: 600; }
 .profhead h2 { display: flex; align-items: center; gap: 10px; }
 
+.landing { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 22px; align-items: center; }
+.gate { display: grid; justify-items: center; gap: 8px; }
+.doorframe {
+  position: relative; width: clamp(108px, 28vw, 190px); aspect-ratio: 1 / 1.85;
+  border-radius: 12px 12px 0 0; background: radial-gradient(ellipse at 50% 70%, var(--lv2), var(--lv4) 75%);
+  box-shadow: inset 0 0 0 7px var(--door-frame); perspective: 900px; overflow: hidden;
+}
+.doorframe .inside { position: absolute; left: 0; right: 0; bottom: 10%; text-align: center; font-size: clamp(2rem, 7vw, 3.4rem); }
+.door {
+  position: absolute; inset: 7px 7px 0 7px; border-radius: 3px 3px 0 0; background: var(--door);
+  transform-origin: left center; transition: transform 1.2s cubic-bezier(.6, .05, .3, 1); z-index: 1;
+}
+.door::before, .door::after {
+  content: ""; position: absolute; left: 14%; right: 14%; border-radius: 6px; background: var(--door-panel);
+}
+.door::before { top: 7%; height: 26%; }
+.door::after { bottom: 6%; height: 40%; }
+.door .knob { position: absolute; right: 10%; top: 54%; width: 9%; aspect-ratio: 1; border-radius: 50%; background: var(--knob); z-index: 2; }
+.door .wc { position: absolute; top: 13%; left: 0; right: 0; text-align: center; font-family: var(--font-display); font-weight: 800; color: var(--muted); z-index: 2; font-size: clamp(.8rem, 2.6vw, 1.1rem); }
+.door .sign {
+  position: absolute; top: 40%; left: 50%; transform: translateX(-50%); z-index: 2;
+  background: var(--sign-busy); color: #fff; font-family: var(--font-display); font-weight: 800;
+  font-size: clamp(.72rem, 2.4vw, 1rem); letter-spacing: .12em; padding: 4px 10px; border-radius: 6px; transition: background .3s;
+}
+.door .sign.free { background: var(--sign-free); }
+.door.open { transform: rotateY(-102deg); }
+.gate .caption { font-size: .78rem; color: var(--muted); text-align: center; max-width: 16ch; }
+.counter .countbig { font-family: var(--font-display); font-weight: 800; font-size: clamp(2.6rem, 11vw, 4.4rem); line-height: 1; font-variant-numeric: tabular-nums; margin: 4px 0; }
+.endeks { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
+.endeks .stat .v { font-size: 1.7rem; }
+.endeks .stat .k { font-size: .88rem; color: var(--fg); }
+@media (prefers-reduced-motion: reduce) { .door { transition: none; } }
+
 .banner { background: var(--lv1); color: var(--btn-fg); border-radius: 12px; padding: 12px 16px; }
 .toast {
   position: fixed; left: 50%; transform: translateX(-50%) translateY(20px); z-index: 30;
@@ -244,6 +285,26 @@ textarea { resize: vertical; min-height: 84px; }
 
   <div class="banner" id="banner" hidden></div>
   <p class="subline" id="signedOutNote">Yükleniyor…</p>
+
+  <section class="panel landing" id="landingTop" hidden>
+    <div class="gate" aria-hidden="true">
+      <div class="doorframe">
+        <span class="inside">🚽</span>
+        <div class="door" id="door">
+          <span class="wc">WC</span>
+          <span class="sign" id="doorSign">DOLU</span>
+          <span class="knob"></span>
+        </div>
+      </div>
+      <span class="caption" id="doorCaption">İçeri girmek için kaydol ya da giriş yap.</span>
+    </div>
+    <div class="counter" style="min-width:0">
+      <span class="label">Canlı sayaç</span>
+      <p class="subline" style="margin:6px 0 0">Bu ekip şimdiye kadar</p>
+      <div class="countbig" id="lcPees">0</div>
+      <p class="subline" style="margin:0"><b>kez işedi.</b> <span id="lcMeta"></span></p>
+    </div>
+  </section>
 
   <section class="panel" id="nickPanel" hidden>
     <h2 id="nickTitle">Hoş geldin!</h2>
@@ -292,6 +353,16 @@ textarea { resize: vertical; min-height: 84px; }
       <input id="securePin" type="password" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="new-password" placeholder="••••" aria-label="4 haneli şifre" style="max-width:9rem;font-family:var(--font-mono);letter-spacing:.35em">
       <button class="pee sm" type="submit" id="secureSend">Şifreyi kaydet</button>
     </form>
+  </section>
+
+  <section class="panel" id="landingBottom" hidden>
+    <h2>Haftalık İşeme Endeksi</h2>
+    <div class="endeks">
+      <div class="stat"><div class="v">%73</div><div class="k">Salı gecesi 04:00'te hiç işememiş insan oranı. Bunu değiştirmek senin elinde.</div></div>
+      <div class="stat"><div class="v">4,2 bardak</div><div class="k">Bir kareyi tek başına tam doldurmak için gereken ortalama çay.</div></div>
+      <div class="stat"><div class="v">03:00–06:00</div><div class="k">Tablonun en zor saatleri. Ekipte bir gece kuşu yoksa işiniz zor.</div></div>
+    </div>
+    <p class="hint">Kaynak: tamamen uydurduk.</p>
   </section>
 
   <div id="app" hidden style="display:grid;gap:18px">
@@ -778,8 +849,12 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
 
   function renderMe() {
     const me = state.uid && state.players[state.uid];
-    $('me').hidden = !me;
-    $('app').hidden = !me;
+    $('me').hidden = !me || !!state.entering;
+    const inside = !!me && !state.entering;
+    $('app').hidden = !inside;
+    const landing = !inside && state.db && state.authChecked;
+    $('landingTop').hidden = !landing;
+    $('landingBottom').hidden = !landing || !!state.entering;
     $('signedOutNote').hidden = !!me || !state.db || (state.authChecked && state.loaded);
     if (me) { $('meNick').textContent = me.nick; fillAv($('meAv'), avOf(state.uid)); }
     $('adminTag').hidden = !(me && state.admin);
@@ -981,7 +1056,20 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
     $('nickTitle').textContent = state.nickEdit ? 'Profilini düzenle' : 'Hoş geldin!';
   }
 
+  function openDoor() {
+    const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (reduce || $('landingTop').hidden) return;
+    state.entering = true;
+    $('nickPanel').hidden = true; $('securePanel').hidden = true;
+    $('doorSign').textContent = 'BOŞ'; $('doorSign').classList.add('free');
+    $('doorCaption').textContent = 'Buyur, içeri gel.';
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    setTimeout(() => $('door').classList.add('open'), 450);
+    setTimeout(() => { state.entering = false; render(); }, 1900);
+  }
+
   function setMe(id) {
+    openDoor();
     state.uid = id; state.legacyUid = null; state.legacyNick = null; state.seq = 0; peeMap = new Map();
     try { localStorage.removeItem('iseme-uid'); } catch (e) {}
   }
@@ -1138,6 +1226,27 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
     return loading;
   }
 
+  function countUp(el, to) {
+    const fmtN = (n) => n.toLocaleString('tr-TR');
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches || to < 2) { el.textContent = fmtN(to); return; }
+    const t0 = performance.now(); const dur = 1200;
+    const step = (t) => {
+      const k = Math.min(1, (t - t0) / dur); const e = 1 - Math.pow(1 - k, 3);
+      el.textContent = fmtN(Math.round(to * e));
+      if (k < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }
+  async function loadPublicStats() {
+    try {
+      const st = await rpc('public_stats', {});
+      if (!st) return;
+      countUp($('lcPees'), Number(st.pees) || 0);
+      const pct = Math.floor((Number(st.points) || 0) / (SLOTS * FULL) * 100);
+      $('lcMeta').textContent = (Number(st.players) || 0) + ' kişi · tablo doluluğu %' + pct;
+    } catch (e) {}
+  }
+
   async function start() {
     if (!window.supabase || !SUPABASE_URL.startsWith('https://')) { showBanner('Veritabanı ayarları eksik.'); return; }
     state.sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { auth: { persistSession: false } });
@@ -1154,7 +1263,7 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
     } catch (e) { showBanner('Sunucuya ulaşılamadı. Sayfayı yenile.'); return; }
     state.authChecked = true;
     if (state.uid) { readCache(); render(); await loadAll(); }
-    else { state.loaded = true; state.playersLoaded = true; render(); }
+    else { state.loaded = true; state.playersLoaded = true; render(); loadPublicStats(); }
     setInterval(() => { if (document.visibilityState === 'visible') loadAll(); }, 30000);
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') loadAll(); });
   }
