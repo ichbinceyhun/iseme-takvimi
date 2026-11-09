@@ -110,6 +110,8 @@ h1 .drop { color: var(--lv3); }
 .pee:active { transform: translateY(2px); box-shadow: 0 1px 0 var(--lv4); }
 .pee:disabled { opacity: .55; cursor: default; }
 .pee.sm { font-size: 1rem; padding: 10px 18px; }
+a.pee, a.ghost { display: inline-block; text-decoration: none; text-align: center; }
+.invmsg { background: var(--bg); border-radius: 12px; padding: 12px 14px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: .95rem; }
 .ghost { background: transparent; color: var(--fg); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; font: inherit; cursor: pointer; }
 .ghost:hover { border-color: var(--muted); }
 .ghost:disabled { opacity: .55; cursor: default; }
@@ -476,6 +478,7 @@ textarea { resize: vertical; min-height: 84px; }
   <section class="panel">
     <div class="logrow">
       <button class="pee" id="peeNow" type="button">İşedim</button>
+      <button class="ghost" id="inviteBtn" type="button">🚽 Tuvalete davet et</button>
       <span class="subline" id="nowHint"></span>
     </div>
   </section>
@@ -598,6 +601,21 @@ textarea { resize: vertical; min-height: 84px; }
       </div>
       </div>
     </div>
+  </section>
+</div>
+
+<div class="scrim" id="inviteSheet" hidden>
+  <section class="sheet" role="dialog" aria-modal="true" aria-labelledby="invTitle">
+    <h2 id="invTitle">Tuvalete davet et</h2>
+    <p class="subline" style="margin:0">Bu bağlantıyla gelen arkadaşın kaydolup sıraya girebilir. Sıra uzadıkça tablo o kadar hızlı dolar.</p>
+    <div class="invmsg" id="invMsg">Davet bağlantın hazırlanıyor…</div>
+    <div class="actions" style="justify-content:flex-start">
+      <a class="pee sm" id="invWa" href="#" target="_blank" rel="noopener noreferrer">WhatsApp'ta gönder</a>
+      <button class="ghost" type="button" id="invShare" hidden>Paylaş</button>
+      <button class="ghost" type="button" id="invCopy">Mesajı kopyala</button>
+    </div>
+    <p class="hint" style="margin:0">Link yanlış ellere geçtiyse <button class="linkbtn" type="button" id="invRotate">yeni link oluştur</button>, eskisi çalışmaz olur.</p>
+    <div class="actions"><button class="ghost" type="button" id="invClose">Kapat</button></div>
   </section>
 </div>
 
@@ -843,7 +861,9 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
     $('profile').hidden = false;
     const mine = state.pees.filter((p) => p.by === id).sort((a, b) => b.ts - a.ts);
     const pn = $('profName'); pn.innerHTML = ''; pn.append(avatarEl(id, 'lg'), nickOf(id) + (id === state.uid ? ' (sen)' : ''));
-    $('profSince').textContent = mine.length ? 'İlk kayıt: ' + shortDate(mine[mine.length - 1].ts) + ' · son kayıt: ' + fmt(mine[0].ts) : 'Henüz hiç işeme kaydı yok.';
+    const inviter = state.players[id] && state.players[id].invitedBy;
+    $('profSince').textContent = (inviter && state.players[inviter] ? 'Davet eden: ' + nickOf(inviter) + ' · ' : '')
+      + (mine.length ? 'İlk kayıt: ' + shortDate(mine[mine.length - 1].ts) + ' · son kayıt: ' + fmt(mine[0].ts) : 'Henüz hiç işeme kaydı yok.');
 
     const ts = todayStart(), ws = weekStart();
     const counts = new Map(); const hours = new Array(24).fill(0); const days = new Array(7).fill(0);
@@ -879,6 +899,7 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
       ['Gece işemesi (00–06)', night],
       ['Dokunduğu kare', counts.size + '/' + SLOTS],
       ['Not yazdığı', mine.filter((p) => p.note).length],
+      ['Davet ettiği', Object.values(state.players).filter((pl) => pl.invitedBy === id).length + ' kişi'],
       ['Bugünkü sırası', pos >= 0 ? (pos + 1) + '.' : '—'],
     ];
     const box = $('profStats'); box.innerHTML = '';
@@ -1085,7 +1106,7 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
   $('sheetNote').addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); submitSheet(); } });
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
-    if (!$('sheet').hidden) closeSheet(); else if (state.profile) closeProfile();
+    if (!$('inviteSheet').hidden) closeInvite(); else if (!$('sheet').hidden) closeSheet(); else if (state.profile) closeProfile();
   });
   document.addEventListener('click', (e) => {
     const t = e.target.closest('[data-profile]'); if (!t) return;
@@ -1160,6 +1181,7 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
             isim_alinmis: "Bu isim alınmış. Senin hesabınsa Giriş yap'a geç.",
             gecersiz_ad: "Adda sadece harf, rakam, boşluk ve . ' _ - kullanılabilir.",
             cok_fazla_istek: 'Çok fazla deneme oldu. Biraz sonra tekrar dene.',
+            davet_limit: 'Bu davet linkiyle bugün çok fazla kişi kaydoldu. Yarın tekrar dene.',
             cihaz_kayitli: 'Bu cihaz zaten bir profile bağlı. Sayfayı yenile.',
           })[r.reason] || 'Kaydedemedim, tekrar dene.');
           return;
@@ -1169,7 +1191,7 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
       } else {
         await rpc('update_profile', { p_token: state.token, p_nick: nick, p_avatar: avatar });
       }
-      state.players = Object.assign({}, state.players, { [state.uid]: { nick, avatar } });
+      state.players = Object.assign({}, state.players, { [state.uid]: Object.assign({}, state.players[state.uid], { nick, avatar }) });
       loadAll();
       $('nickPanel').hidden = true;
       toast(isNew ? 'Hoş geldin, ' + nick + '.' : 'Profil güncellendi.');
@@ -1219,7 +1241,8 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
     profile_update: 'Profilini düzenledi', pee_add: 'İşeme ekledi', pee_delete: 'İşemesini sildi',
     admin_login_ok: 'Panele girdi', admin_login_fail: 'Panele hatalı giriş', admin_password_set: 'Yönetici şifresini belirledi',
     admin_pee_update: 'Kayıt düzenledi', admin_pee_delete: 'Kayıt sildi', admin_player_update: 'Profil düzenledi',
-    admin_pin_reset: 'Şifre sıfırladı', admin_invite_rotate: 'Davet bağlantısını yeniledi', register_fail: 'Davetsiz kayıt denemesi', admin_devices_revoke: 'Cihazlardan çıkardı', admin_player_delete: 'Profil sildi',
+    admin_pin_reset: 'Şifre sıfırladı', admin_invite_rotate: 'Genel davet bağlantısını yeniledi',
+    invite_rotate: 'Davet linkini yeniledi', admin_player_invite_rotate: 'Davet linkini sıfırladı', register_fail: 'Davetsiz kayıt denemesi', admin_devices_revoke: 'Cihazlardan çıkardı', admin_player_delete: 'Profil sildi',
   };
   const BAD_EVENTS = ['login_fail', 'login_locked', 'admin_login_fail', 'register_fail'];
   function slotTxt(d) { return d && d.gun != null ? DAYS[d.gun] + ' ' + pad(d.saat) + ':' + pad(d.dakika) : ''; }
@@ -1230,6 +1253,8 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
       case 'pee_add': case 'pee_delete': return slotTxt(d) + note;
       case 'login_fail': return d.reason === 'isim_yok' ? '"' + (d.nick || '') + '" adında kimse yok' : 'Yanlış şifre';
       case 'login_locked': return 'Profil kilitliyken denendi';
+      case 'register': return d.davet_eden_ad ? d.davet_eden_ad + ' davet etti' : 'Genel davet koduyla';
+      case 'admin_player_invite_rotate': return d.kisi_ad || '';
       case 'register_fail': return d.nick ? '"' + d.nick + '" adıyla, geçersiz davetle' : 'Geçersiz davetle';
       case 'profile_update': case 'admin_player_update':
         return (d.eski_ad && d.eski_ad !== d.yeni_ad) ? d.eski_ad + ' → ' + d.yeni_ad : 'Avatar değişti';
@@ -1408,6 +1433,7 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
       li.appendChild(row);
       if (admOpenId === p.id) {
         const det = mk('div', 'pdetail');
+        det.appendChild(mk('div', 'meta', 'Davet eden: ' + (p.invited_by || 'genel davet kodu') + ' · davet ettiği: ' + (p.invited_count || 0) + ' kişi'));
         if (p.failed) det.appendChild(mk('div', 'meta', 'Art arda yanlış şifre: ' + p.failed + (p.locked_until ? ' · kilit ' + hm(new Date(p.locked_until)) + "'a kadar" : '')));
         const dl = mk('ul', 'devlist'); dl.id = 'dev-' + p.id; dl.appendChild(mk('li', null, 'Cihazlar yükleniyor…'));
         det.appendChild(dl);
@@ -1417,6 +1443,14 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
         const b2 = mk('button', 'ghost', 'Kayıtlarını göster'); b2.type = 'button';
         b2.addEventListener('click', () => { $('logPlayer').value = p.id; loadLogs(true); $('admLogs').scrollIntoView({ behavior: 'smooth', block: 'start' }); });
         acts.append(b1, b2);
+        const b4 = mk('button', 'ghost', state.invRotConfirm === p.id ? 'Emin misin?' : 'Davet linkini sıfırla'); b4.type = 'button';
+        b4.addEventListener('click', async () => {
+          if (state.invRotConfirm !== p.id) { state.invRotConfirm = p.id; renderAdminPlayers(); loadDevices(p.id); return; }
+          state.invRotConfirm = null;
+          try { await adminRpc('admin_rotate_player_invite', { p_player_id: p.id }); toast(p.nick + ' için davet linki sıfırlandı. Eski link çalışmıyor.'); renderAdminPlayers(); loadDevices(p.id); }
+          catch (err) { toast(errText(err, 'Yapamadım.')); }
+        });
+        acts.appendChild(b4);
         if (p.id !== state.uid) {
           const b3 = mk('button', 'ghost', state.revokeConfirm === p.id ? 'Emin misin?' : 'Bütün cihazlardan çıkar'); b3.type = 'button';
           b3.style.color = 'var(--danger)'; b3.style.borderColor = 'var(--danger)';
@@ -1484,6 +1518,54 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
   $('admMore').addEventListener('click', () => loadLogs(false));
   $('logPlayer').addEventListener('change', () => loadLogs(true));
   $('logEvent').addEventListener('change', () => loadLogs(true));
+
+  // ---------------- Tuvalete davet et ----------------
+  let invLink = '';
+  function inviteText(link) {
+    return "Seni tuvalete davet ediyorum! 🚽\nİşeme Takvimi'nde haftanın 168 saatini birlikte dolduruyoruz. Gel, bir kare de sen kap:\n" + link;
+  }
+  function showInvite(code) {
+    invLink = location.origin + location.pathname + '?davet=' + encodeURIComponent(code);
+    $('invMsg').textContent = inviteText(invLink);
+    $('invWa').href = 'https://wa.me/?text=' + encodeURIComponent(inviteText(invLink));
+    $('invShare').hidden = !navigator.share;
+  }
+  async function openInvite() {
+    if (!state.uid) return;
+    lastFocus = document.activeElement;
+    $('inviteSheet').hidden = false;
+    if (state.myInvite) showInvite(state.myInvite);
+    try {
+      state.myInvite = await rpc('my_invite', { p_token: state.token, p_rotate: false });
+      showInvite(state.myInvite);
+    } catch (err) { $('invMsg').textContent = errText(err, 'Davet bağlantısı alınamadı. Biraz sonra tekrar dene.'); }
+    $('invCopy').focus();
+  }
+  function closeInvite() { $('inviteSheet').hidden = true; state.invRotate = false; $('invRotate').textContent = 'yeni link oluştur'; if (lastFocus && lastFocus.focus) lastFocus.focus(); }
+  $('inviteBtn').addEventListener('click', openInvite);
+  $('invClose').addEventListener('click', closeInvite);
+  $('inviteSheet').addEventListener('click', (e) => { if (e.target === $('inviteSheet')) closeInvite(); });
+  $('invCopy').addEventListener('click', async () => {
+    if (!invLink) return;
+    try { await navigator.clipboard.writeText(inviteText(invLink)); toast('Davet mesajı kopyalandı.'); }
+    catch (e) {
+      const r = document.createRange(); r.selectNodeContents($('invMsg'));
+      const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r);
+      toast('Mesajı seçtim, kopyala.');
+    }
+  });
+  $('invShare').addEventListener('click', async () => {
+    if (!invLink || !navigator.share) return;
+    try { await navigator.share({ title: 'İşeme Takvimi', text: inviteText('').trim(), url: invLink }); } catch (e) {}
+  });
+  $('invRotate').addEventListener('click', async () => {
+    if (!state.invRotate) { state.invRotate = true; $('invRotate').textContent = 'emin misin? eski link bozulur'; return; }
+    state.invRotate = false; $('invRotate').textContent = 'yeni link oluştur';
+    try {
+      state.myInvite = await rpc('my_invite', { p_token: state.token, p_rotate: true });
+      showInvite(state.myInvite); toast('Yeni davet linkin hazır. Eskisi artık çalışmıyor.');
+    } catch (err) { toast(errText(err, 'Yenileyemedim, biraz sonra tekrar dene.')); }
+  });
 
   narrow.addEventListener('change', render);
   setInterval(() => { if ($('sheet').hidden) render(); }, 60000);
@@ -1613,8 +1695,8 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
   }
   function setPlayers(list) {
     const m = {};
-    (list || []).forEach(([id, nick, avatar]) => {
-      if (typeof nick === 'string') m[id] = { nick: nick.slice(0, 24), avatar: typeof avatar === 'string' && AV[avatar] ? avatar : null };
+    (list || []).forEach(([id, nick, avatar, invitedBy]) => {
+      if (typeof nick === 'string') m[id] = { nick: nick.slice(0, 24), avatar: typeof avatar === 'string' && AV[avatar] ? avatar : null, invitedBy: invitedBy || null };
     });
     state.players = m;
   }
@@ -1698,7 +1780,7 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
     clearTimeout(logoutTimer); state.confirmLogout = false; btn.textContent = 'çıkış yap';
     try { await rpc('logout', { p_token: state.token }); } catch (e) {}
     try { localStorage.removeItem('iseme-token'); localStorage.removeItem(CACHE_KEY); } catch (e) {}
-    endAdminSession(); state.adminOpen = false;
+    endAdminSession(); state.adminOpen = false; state.myInvite = null;
     state.token = deviceToken();
     state.uid = null; state.admin = false; state.players = {}; state.pees = []; peeMap = new Map(); state.seq = 0;
     state.profile = null; state.admFor = null; state.nickEdit = false; state.authMode = 'login';

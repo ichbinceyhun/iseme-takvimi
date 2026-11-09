@@ -93,7 +93,15 @@ create index if not exists audit_log_at_idx on public.audit_log (at);
 create index if not exists audit_log_event_ip_idx on public.audit_log (event, ip, at);
 create index if not exists audit_log_event_player_idx on public.audit_log (event, player_id, at);
 
--- Site ayarları (davet kodu). Siteden okunamaz.
+-- Kişisel davet kodları ve kimin kimi davet ettiği
+alter table public.players add column if not exists invited_by text references public.players(id) on delete set null;
+create table if not exists public.invites (
+  player_id text primary key references public.players(id) on delete cascade,
+  code text not null unique,
+  created_at timestamptz not null default now()
+);
+
+-- Site ayarları (yöneticinin genel davet kodu). Siteden okunamaz.
 create table if not exists public.settings (
   key text primary key,
   value text not null
@@ -114,6 +122,7 @@ alter table public.admins enable row level security;
 alter table public.admin_sessions enable row level security;
 alter table public.audit_log enable row level security;
 alter table public.settings enable row level security;
+alter table public.invites enable row level security;
 
 -- Tablolara doğrudan erişim tamamen kapalı. Okuma ve yazma yalnızca
 -- aşağıdaki fonksiyonlarla ve giriş yapmış bir cihazla yapılır.
@@ -125,7 +134,7 @@ drop policy if exists pees_insert on public.pees;
 drop policy if exists pees_delete on public.pees;
 revoke all on public.players, public.pees from anon, authenticated;
 revoke all on public.player_secrets, public.devices, public.pee_deletions, public.admins,
-  public.admin_sessions, public.audit_log, public.settings from anon, authenticated;
+  public.admin_sessions, public.audit_log, public.settings, public.invites from anon, authenticated;
 revoke all on sequence public.sync_seq from anon, authenticated;
 revoke all on sequence public.audit_log_id_seq from anon, authenticated;
 
@@ -284,7 +293,7 @@ end $$;
 create or replace function public.register_player(p_token text, p_nick text, p_avatar text, p_pin text, p_invite text)
 returns jsonb language plpgsql security definer set search_path = ''
 as $$
-declare v_id text := gen_random_uuid()::text; v_code text;
+declare v_id text := gen_random_uuid()::text; v_code text; v_inviter text; v_given text := upper(btrim(coalesce(p_invite, '')));
 begin
   perform public._check_input(p_token, p_pin);
   if public._ip_count(array['register', 'register_fail'], interval '1 hour') >= 5
@@ -292,9 +301,17 @@ begin
     return jsonb_build_object('ok', false, 'reason', 'cok_fazla_istek');
   end if;
   select value into v_code from public.settings where key = 'invite_code';
-  if v_code is null or upper(btrim(coalesce(p_invite, ''))) <> v_code then
-    perform public._log('register_fail', null, p_token, jsonb_build_object('reason', 'davet', 'nick', left(coalesce(p_nick, ''), 40)));
-    return jsonb_build_object('ok', false, 'reason', 'davet_gecersiz');
+  if v_given = '' or v_code is null or v_given <> v_code then
+    select player_id into v_inviter from public.invites where code = v_given and v_given <> '';
+    if v_inviter is null then
+      perform public._log('register_fail', null, p_token, jsonb_build_object('reason', 'davet', 'nick', left(coalesce(p_nick, ''), 40)));
+      return jsonb_build_object('ok', false, 'reason', 'davet_gecersiz');
+    end if;
+    -- Bir kişinin linkiyle günde en fazla 10 kayıt (link yayılırsa diye)
+    if (select count(*) from public.audit_log
+        where event = 'register' and detail->>'davet_eden' = v_inviter and at > now() - interval '1 day') >= 10 then
+      return jsonb_build_object('ok', false, 'reason', 'davet_limit');
+    end if;
   end if;
   if not public._nick_ok(p_nick) then
     return jsonb_build_object('ok', false, 'reason', 'gecersiz_ad');
@@ -303,14 +320,15 @@ begin
     return jsonb_build_object('ok', false, 'reason', 'cihaz_kayitli');
   end if;
   begin
-    insert into public.players (id, nick, avatar) values (v_id, btrim(p_nick), p_avatar);
+    insert into public.players (id, nick, avatar, invited_by) values (v_id, btrim(p_nick), p_avatar, v_inviter);
   exception when unique_violation then
     return jsonb_build_object('ok', false, 'reason', 'isim_alinmis');
   end;
   insert into public.player_secrets (player_id, pin_hash) values (v_id, extensions.crypt(p_pin, extensions.gen_salt('bf')));
   insert into public.devices (token_hash, player_id, last_seen, last_ip, last_ua)
     values (public._token_hash(p_token), v_id, now(), public._req('ip'), public._req('ua'));
-  perform public._log('register', v_id, p_token, jsonb_build_object('avatar', p_avatar));
+  perform public._log('register', v_id, p_token, jsonb_build_object('avatar', p_avatar, 'davet_eden', v_inviter,
+    'davet_eden_ad', (select nick from public.players where id = v_inviter)));
   return jsonb_build_object('ok', true, 'id', v_id);
 end $$;
 
@@ -411,7 +429,7 @@ begin
       coalesce((select max(seq) from public.pees), 0),
       coalesce((select max(seq) from public.pee_deletions), 0)),
     'total', (select count(*) from public.pees),
-    'players', coalesce((select jsonb_agg(jsonb_build_array(id, nick, avatar)) from public.players), '[]'::jsonb),
+    'players', coalesce((select jsonb_agg(jsonb_build_array(id, nick, avatar, invited_by)) from public.players), '[]'::jsonb),
     'pees', coalesce((select jsonb_agg(jsonb_build_array(id, player_id, day, hour, minute, ts, note))
                       from public.pees where seq > v_since), '[]'::jsonb),
     'deleted', case when v_since = 0 then '[]'::jsonb else
@@ -494,6 +512,29 @@ begin
     return true;
   end if;
   return false;
+end $$;
+
+-- Kendi davet kodun. Yoksa oluşturulur; p_rotate ise yenilenir (eski link çalışmaz olur).
+create or replace function public.my_invite(p_token text, p_rotate boolean default false)
+returns text language plpgsql security definer set search_path = ''
+as $$
+declare v_player text := public._player_for(p_token); v_code text;
+begin
+  if v_player is null then raise exception 'yetkisiz'; end if;
+  if p_rotate then
+    if public._player_count('invite_rotate', v_player, interval '1 hour') >= 5 then raise exception 'cok_hizli'; end if;
+    v_code := upper(encode(extensions.gen_random_bytes(5), 'hex'));
+    insert into public.invites (player_id, code) values (v_player, v_code)
+      on conflict (player_id) do update set code = excluded.code, created_at = now();
+    perform public._log('invite_rotate', v_player, p_token);
+    return v_code;
+  end if;
+  select code into v_code from public.invites where player_id = v_player;
+  if v_code is null then
+    v_code := upper(encode(extensions.gen_random_bytes(5), 'hex'));
+    insert into public.invites (player_id, code) values (v_player, v_code);
+  end if;
+  return v_code;
 end $$;
 
 -- Kumanda paneli: giriş ------------------------------------------------------
@@ -602,7 +643,9 @@ begin
         'has_pin', s.player_id is not null,
         'failed', coalesce(s.failed_attempts, 0),
         'locked_until', case when s.locked_until > now() then s.locked_until end,
-        'is_admin', exists (select 1 from public.admins a where a.player_id = p.id)
+        'is_admin', exists (select 1 from public.admins a where a.player_id = p.id),
+        'invited_by', (select i.nick from public.players i where i.id = p.invited_by),
+        'invited_count', (select count(*) from public.players c where c.invited_by = p.id)
       ) order by p.nick)
       from public.players p left join public.player_secrets s on s.player_id = p.id
     ), '[]'::jsonb)
@@ -755,6 +798,20 @@ begin
   return v_code;
 end $$;
 
+-- Bir kişinin davet linkini sıfırla (linki yabancılara yayıldıysa)
+create or replace function public.admin_rotate_player_invite(p_token text, p_session text, p_player_id text)
+returns boolean language plpgsql security definer set search_path = ''
+as $$
+declare v_admin text := public._admin_ok(p_token, p_session);
+begin
+  if not exists (select 1 from public.players where id = p_player_id) then return false; end if;
+  insert into public.invites (player_id, code) values (p_player_id, upper(encode(extensions.gen_random_bytes(5), 'hex')))
+    on conflict (player_id) do update set code = excluded.code, created_at = now();
+  perform public._log('admin_player_invite_rotate', v_admin, p_token, jsonb_build_object(
+    'kisi', p_player_id, 'kisi_ad', (select nick from public.players where id = p_player_id)));
+  return true;
+end $$;
+
 -- Yetkiler -------------------------------------------------------------------
 
 do $$
@@ -764,6 +821,8 @@ begin
     'whoami(text)',
     'register_player(text, text, text, text, text)',
     'admin_invite(text, text, boolean)',
+    'my_invite(text, boolean)',
+    'admin_rotate_player_invite(text, text, text)',
     'secure_existing(text, text, text)',
     'login(text, text, text)',
     'legacy_status(text)',
