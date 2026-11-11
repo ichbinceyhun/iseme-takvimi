@@ -867,8 +867,7 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
     head.appendChild(acts);
     body.appendChild(head);
     // Metin
-    if (p.note) { const t = document.createElement('p'); t.className = 'tw-text'; t.textContent = p.note; body.appendChild(t); }
-    else { const t = document.createElement('p'); t.className = 'tw-empty'; t.textContent = 'sessizce işedi'; body.appendChild(t); }
+    if (p.note) { const t = document.createElement('p'); t.className = 'tw-text note'; t.textContent = p.note; body.appendChild(t); }
     // Menü (Düzenle / Sil)
     if (state.menuFor === p.id && (canEdit || canDel)) {
       const menu = document.createElement('div'); menu.className = 'tw-menu';
