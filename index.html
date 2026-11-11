@@ -111,6 +111,40 @@ h1 .drop { color: var(--lv3); }
 .pee:disabled { opacity: .55; cursor: default; }
 .pee.sm { font-size: 1rem; padding: 10px 18px; }
 a.pee, a.ghost { display: inline-block; text-decoration: none; text-align: center; }
+.feed li.tw { grid-template-columns: 40px minmax(0, 1fr); gap: 10px; padding: 12px 0; position: relative; }
+.tw .tw-av { width: 40px; height: 40px; font-size: 1.15rem; padding: 0; border: 0; cursor: pointer; }
+.tw-body { min-width: 0; display: grid; gap: 2px; }
+.tw-head { display: flex; align-items: center; gap: 6px; min-height: 28px; min-width: 0; }
+.tw-head .wholink { font-weight: 600; min-width: 0; overflow: hidden; }
+.tw-head .wholink .nm { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tw-head .tw-time { flex: none; }
+.tw-head .tw-acts { flex: none; }
+.tw-time { font-family: var(--font-mono); font-size: .76rem; color: var(--muted); }
+.tw-acts { margin-left: auto; display: flex; gap: 2px; opacity: 0; transition: opacity .15s; }
+.tw:hover .tw-acts, .tw:focus-within .tw-acts, .tw.active .tw-acts { opacity: 1; }
+@media (hover: none) { .tw-acts { opacity: .4; } }
+.ic { background: none; border: 0; color: var(--muted); font: inherit; font-size: .95rem; line-height: 1; padding: 6px 7px; border-radius: 9px; cursor: pointer; }
+.ic:hover, .ic[aria-expanded="true"] { background: var(--bg); color: var(--fg); }
+.ic:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+.tw-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.tw-empty { margin: 0; color: var(--muted); font-style: italic; font-size: .92rem; }
+.tw-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.chip2 {
+  border: 1px solid var(--line); background: transparent; color: var(--fg); border-radius: 999px;
+  padding: 1px 9px; font: inherit; font-size: .82rem; line-height: 1.7; cursor: pointer; display: inline-flex; align-items: center; gap: 4px;
+}
+.chip2 .n { font-family: var(--font-mono); font-size: .76rem; }
+.chip2.on { background: var(--lv1); border-color: var(--lv3); }
+.chip2:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.tw-picker {
+  display: flex; gap: 2px; margin-top: 6px; padding: 4px 6px; width: max-content; max-width: 100%;
+  border: 1px solid var(--line); border-radius: 999px; background: var(--surface); box-shadow: 0 6px 18px rgba(0, 0, 0, .14);
+}
+.tw-picker button { font-size: 1.3rem; line-height: 1; background: none; border: 0; padding: 4px 6px; border-radius: 50%; cursor: pointer; transition: transform .12s; }
+.tw-picker button:hover, .tw-picker button:focus-visible { transform: scale(1.25); outline: none; }
+.tw-picker button.on { background: var(--lv1); }
+@media (prefers-reduced-motion: reduce) { .tw-picker button { transition: none; } }
+.tw-menu { display: flex; gap: 14px; margin-top: 4px; }
 .social { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 .rx {
   border: 1px solid var(--line); background: transparent; color: var(--fg); border-radius: 999px;
@@ -794,28 +828,70 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
       : '. Dolması için ' + (FULL - c) + ' işeme daha lazım.');
   }
 
-  function feedItem(p, showSlot) {
+  function shortTime(ts) {
+    const m = Math.floor((Date.now() - ts) / 6e4);
+    if (m < 1) return 'az önce';
+    if (m < 60) return m + ' dk';
+    if (m < 24 * 60) return Math.floor(m / 60) + ' sa';
+    const d = new Date(ts);
+    return d.getDate() + ' ' + MONTHS[d.getMonth()] + ' ' + hm(d);
+  }
+
+  function feedItem(p) {
     const li = document.createElement('li');
-    const top = document.createElement('div'); top.className = 'feedtop';
-    const who = personLink(p.by);
-    const right = document.createElement('span'); right.style.display = 'flex'; right.style.gap = '8px'; right.style.alignItems = 'baseline';
-    const w = document.createElement('span'); w.className = 'when'; w.textContent = fmt(p.ts);
-    right.appendChild(w);
-    if (adminOn()) {
-      const ed = document.createElement('button'); ed.type = 'button'; ed.className = 'del'; ed.style.color = 'var(--muted)';
-      ed.textContent = 'Düzenle'; ed.addEventListener('click', () => openEditSheet(p));
-      right.appendChild(ed);
+    li.className = 'tw' + (state.activeItem === p.id ? ' active' : '');
+    li.dataset.tw = p.id;
+    // Avatar
+    const avb = document.createElement('button'); avb.type = 'button'; avb.className = 'av tw-av'; avb.dataset.profile = p.by;
+    avb.setAttribute('aria-label', nickOf(p.by) + ' profili'); fillAv(avb, avOf(p.by));
+    // Gövde
+    const body = document.createElement('div'); body.className = 'tw-body';
+    const head = document.createElement('div'); head.className = 'tw-head';
+    const nm = document.createElement('button'); nm.type = 'button'; nm.className = 'wholink'; nm.dataset.profile = p.by;
+    nm.appendChild(nameEl(p.by));
+    const tm = document.createElement('span'); tm.className = 'tw-time'; tm.textContent = shortTime(p.ts); tm.title = fmt(p.ts);
+    head.append(nm, tm);
+    // Üzerine gelince çıkan düğmeler
+    const acts = document.createElement('div'); acts.className = 'tw-acts';
+    const mkIc = (txt, label, attr, val, expanded) => {
+      const b = document.createElement('button'); b.type = 'button'; b.className = 'ic'; b.textContent = txt;
+      b.setAttribute('aria-label', label); b.title = label; b.dataset[attr] = val;
+      if (expanded != null) b.setAttribute('aria-expanded', String(expanded));
+      return b;
+    };
+    acts.appendChild(mkIc('☺', 'Tepki ver', 'pickToggle', p.id, state.pickerFor === p.id));
+    acts.appendChild(mkIc('💬', 'Yorum yap', 'cmToggle', p.id, state.openComments === p.id));
+    const canEdit = adminOn();
+    const canDel = (p.by === state.uid || adminOn()) && state.canWrite;
+    if (canEdit || canDel) acts.appendChild(mkIc('···', 'Diğer', 'menuToggle', p.id, state.menuFor === p.id));
+    head.appendChild(acts);
+    body.appendChild(head);
+    // Metin
+    if (p.note) { const t = document.createElement('p'); t.className = 'tw-text'; t.textContent = p.note; body.appendChild(t); }
+    else { const t = document.createElement('p'); t.className = 'tw-empty'; t.textContent = 'sessizce işedi'; body.appendChild(t); }
+    // Menü (Düzenle / Sil)
+    if (state.menuFor === p.id && (canEdit || canDel)) {
+      const menu = document.createElement('div'); menu.className = 'tw-menu';
+      if (canEdit) {
+        const ed = document.createElement('button'); ed.type = 'button'; ed.className = 'del'; ed.style.color = 'var(--fg)';
+        ed.textContent = 'Düzenle'; ed.addEventListener('click', () => { state.menuFor = null; openEditSheet(p); });
+        menu.appendChild(ed);
+      }
+      if (canDel) {
+        const d = document.createElement('button'); d.type = 'button'; d.className = 'del';
+        d.textContent = state.confirmDel === p.id ? 'Emin misin? Sil' : 'Sil';
+        d.addEventListener('click', () => deleteEntry(p.id, p.by));
+        menu.appendChild(d);
+      }
+      body.appendChild(menu);
     }
-    if ((p.by === state.uid || adminOn()) && state.canWrite) {
-      const d = document.createElement('button'); d.type = 'button'; d.className = 'del';
-      d.textContent = state.confirmDel === p.id ? 'Emin misin?' : 'Sil';
-      d.addEventListener('click', () => deleteEntry(p.id, p.by));
-      right.appendChild(d);
-    }
-    top.append(who, right); li.appendChild(top);
-    if (p.note) { const n = document.createElement('p'); n.className = 'note'; n.textContent = p.note; li.appendChild(n); }
-    li.appendChild(socialBar(p));
-    if (state.openComments === p.id) li.appendChild(commentBox(p));
+    // Tepki seçici
+    if (state.pickerFor === p.id) body.appendChild(reactionPicker(p));
+    // Verilmiş tepkiler ve yorum sayısı (yalnızca varsa)
+    const meta = socialMeta(p);
+    if (meta) body.appendChild(meta);
+    if (state.openComments === p.id) body.appendChild(commentBox(p));
+    li.append(avb, body);
     return li;
   }
 
@@ -1129,6 +1205,7 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
   $('sheetNote').addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); submitSheet(); } });
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
+    if (state.pickerFor || state.menuFor) { state.pickerFor = null; state.menuFor = null; render(); return; }
     if (!$('inviteSheet').hidden) closeInvite(); else if (!$('sheet').hidden) closeSheet(); else if (state.profile) closeProfile();
   });
   document.addEventListener('click', (e) => {
@@ -1555,7 +1632,7 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
 
   function visiblePeeIds() {
     const ids = new Set();
-    document.querySelectorAll('[data-pee]').forEach((e) => ids.add(e.dataset.pee));
+    document.querySelectorAll('[data-tw]').forEach((e) => ids.add(e.dataset.tw));
     return [...ids].slice(0, 100);
   }
   function queueSocial(force) {
@@ -1587,30 +1664,52 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
     } catch (e) {} finally { socialLoading = false; }
   }
 
-  function socialBar(p) {
-    const bar = document.createElement('div'); bar.className = 'social'; bar.dataset.pee = p.id;
-    const mine = state.social.rx.get(p.id) || {};
+  // Kayıt altındaki küçük özet: yalnızca verilmiş tepkiler ve yorum sayısı
+  function socialMeta(p) {
+    const rx = state.social.rx.get(p.id) || {};
+    const cms = state.social.cm.get(p.id) || [];
+    const chips = [];
     RX.forEach(([key, emo]) => {
-      const r = mine[key] || { n: 0, mine: false };
+      const r = rx[key];
+      if (!r || !r.n) return;
       const b = document.createElement('button'); b.type = 'button';
-      b.className = 'rx' + (r.mine ? ' on' : '') + (r.n ? '' : ' zero');
+      b.className = 'chip2' + (r.mine ? ' on' : '');
       b.dataset.rx = p.id + '|' + key;
       b.setAttribute('aria-pressed', String(r.mine));
-      b.setAttribute('aria-label', RX_NAME[key] + (r.n ? ', ' + r.n : ''));
+      b.setAttribute('aria-label', RX_NAME[key] + ', ' + r.n + (r.mine ? ', senin tepkin de var' : ''));
       b.append(document.createTextNode(emo));
-      if (r.n) { const n = document.createElement('span'); n.className = 'n'; n.textContent = r.n; b.appendChild(n); }
-      bar.appendChild(b);
+      const n = document.createElement('span'); n.className = 'n'; n.textContent = r.n; b.appendChild(n);
+      chips.push(b);
     });
-    const cms = state.social.cm.get(p.id) || [];
-    const c = document.createElement('button'); c.type = 'button';
-    c.className = 'rx' + (state.openComments === p.id ? ' on' : '') + (cms.length ? '' : ' zero');
-    c.dataset.cmToggle = p.id;
-    c.setAttribute('aria-expanded', String(state.openComments === p.id));
-    c.setAttribute('aria-label', 'Yorumlar' + (cms.length ? ', ' + cms.length : ''));
-    c.append(document.createTextNode('💬'));
-    if (cms.length) { const n = document.createElement('span'); n.className = 'n'; n.textContent = cms.length; c.appendChild(n); }
-    bar.appendChild(c);
+    if (cms.length) {
+      const c = document.createElement('button'); c.type = 'button';
+      c.className = 'chip2' + (state.openComments === p.id ? ' on' : '');
+      c.dataset.cmToggle = p.id;
+      c.setAttribute('aria-expanded', String(state.openComments === p.id));
+      c.setAttribute('aria-label', cms.length + ' yorum');
+      c.append(document.createTextNode('💬'));
+      const n = document.createElement('span'); n.className = 'n'; n.textContent = cms.length; c.appendChild(n);
+      chips.push(c);
+    }
+    if (!chips.length) return null;
+    const bar = document.createElement('div'); bar.className = 'tw-meta';
+    chips.forEach((c) => bar.appendChild(c));
     return bar;
+  }
+
+  function reactionPicker(p) {
+    const rx = state.social.rx.get(p.id) || {};
+    const box = document.createElement('div'); box.className = 'tw-picker'; box.setAttribute('role', 'group'); box.setAttribute('aria-label', 'Tepki seç');
+    RX.forEach(([key, emo]) => {
+      const b = document.createElement('button'); b.type = 'button';
+      const on = !!(rx[key] && rx[key].mine);
+      b.className = on ? 'on' : '';
+      b.dataset.rx = p.id + '|' + key; b.dataset.closePicker = '1';
+      b.setAttribute('aria-pressed', String(on)); b.setAttribute('aria-label', RX_NAME[key]); b.title = RX_NAME[key];
+      b.textContent = emo;
+      box.appendChild(b);
+    });
+    return box;
   }
 
   function commentBox(p) {
@@ -1644,8 +1743,24 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
 
   // Tıklamalar ve gönderimler: kayıt listeleri sık yeniden çizildiği için olaylar belgede yakalanır
   document.addEventListener('click', async (e) => {
+    const pick = e.target.closest('[data-pick-toggle]');
+    if (pick) {
+      const id = pick.dataset.pickToggle;
+      state.pickerFor = state.pickerFor === id ? null : id; state.menuFor = null; state.activeItem = id;
+      render();
+      const first = document.querySelector('[data-tw="' + id + '"] .tw-picker button');
+      if (first && state.pickerFor) first.focus();
+      return;
+    }
+    const menuT = e.target.closest('[data-menu-toggle]');
+    if (menuT) {
+      const id = menuT.dataset.menuToggle;
+      state.menuFor = state.menuFor === id ? null : id; state.pickerFor = null; state.confirmDel = null; state.activeItem = id;
+      render(); return;
+    }
     const rxBtn = e.target.closest('[data-rx]');
     if (rxBtn) {
+      if (rxBtn.dataset.closePicker) state.pickerFor = null;
       const [pee, key] = rxBtn.dataset.rx.split('|');
       const cur = (state.social.rx.get(pee) || {})[key] || { n: 0, mine: false };
       const next = { n: Math.max(0, cur.n + (cur.mine ? -1 : 1)), mine: !cur.mine };
@@ -1659,7 +1774,7 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
     const tg = e.target.closest('[data-cm-toggle]');
     if (tg) {
       const id = tg.dataset.cmToggle;
-      state.openComments = state.openComments === id ? null : id; state.confirmCm = null;
+      state.openComments = state.openComments === id ? null : id; state.confirmCm = null; state.pickerFor = null; state.menuFor = null;
       render();
       if (state.openComments) {
         const inp = document.querySelector('[data-cform="' + id + '"] .cinput');
@@ -1667,6 +1782,15 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
       }
       return;
     }
+    // Telefonda bir kayda dokununca düğmelerini belirginleştir; başka yere dokununca seçici/menü kapanır
+    const tw = e.target.closest('[data-tw]');
+    const interactive = e.target.closest('button, a, input, textarea, select, form');
+    if (tw && !interactive) {
+      const id = tw.dataset.tw;
+      if (state.activeItem !== id) { state.activeItem = id; state.pickerFor = null; state.menuFor = null; render(); }
+      return;
+    }
+    if (!tw && (state.pickerFor || state.menuFor)) { state.pickerFor = null; state.menuFor = null; render(); }
     const del = e.target.closest('[data-cm-del]');
     if (del) {
       const [cid, by] = del.dataset.cmDel.split('|');
