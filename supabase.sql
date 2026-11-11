@@ -93,6 +93,14 @@ create index if not exists audit_log_at_idx on public.audit_log (at);
 create index if not exists audit_log_event_ip_idx on public.audit_log (event, ip, at);
 create index if not exists audit_log_event_player_idx on public.audit_log (event, player_id, at);
 
+-- Görünen ad: yöneticinin koyduğu ad. Boşsa kişinin kendi adı (giriş adı) görünür.
+alter table public.players add column if not exists display_nick text
+  check (display_nick is null or char_length(btrim(display_nick)) between 1 and 24);
+
+-- Tek seferlik düzeltme: yönetici değişikliğiyle kayan giriş adını eski haline getir
+update public.players set nick = 'işeyicipromax', display_nick = 'işeyicipromax dbe'
+  where id = 'bc74063c-bd20-40e8-87f9-4fa628afb18f' and nick = 'işeyicipromax dbe' and display_nick is null;
+
 -- Kişisel davet kodları ve kimin kimi davet ettiği
 alter table public.players add column if not exists invited_by text references public.players(id) on delete set null;
 create table if not exists public.invites (
@@ -216,7 +224,7 @@ begin
   insert into public.audit_log (player_id, nick, event, detail, ip, user_agent, device)
   values (
     p_player,
-    (select nick from public.players where id = p_player),
+    (select coalesce(display_nick, nick) from public.players where id = p_player),
     p_event,
     p_detail,
     public._req('ip'),
@@ -347,7 +355,7 @@ begin
   insert into public.devices (token_hash, player_id, last_seen, last_ip, last_ua)
     values (public._token_hash(p_token), v_id, now(), public._req('ip'), public._req('ua'));
   perform public._log('register', v_id, p_token, jsonb_build_object('avatar', p_avatar, 'davet_eden', v_inviter,
-    'davet_eden_ad', (select nick from public.players where id = v_inviter)));
+    'davet_eden_ad', (select coalesce(display_nick, nick) from public.players where id = v_inviter)));
   return jsonb_build_object('ok', true, 'id', v_id);
 end $$;
 
@@ -448,7 +456,10 @@ begin
       coalesce((select max(seq) from public.pees), 0),
       coalesce((select max(seq) from public.pee_deletions), 0)),
     'total', (select count(*) from public.pees),
-    'players', coalesce((select jsonb_agg(jsonb_build_array(id, nick, avatar, invited_by)) from public.players), '[]'::jsonb),
+    'players', coalesce((select jsonb_agg(jsonb_build_array(
+        id, coalesce(display_nick, nick), avatar, invited_by,
+        case when id = public._player_for(p_token) or public._admin_for(p_token) is not null then nick end))
+      from public.players), '[]'::jsonb),
     'pees', coalesce((select jsonb_agg(jsonb_build_array(id, player_id, day, hour, minute, ts, note))
                       from public.pees where seq > v_since), '[]'::jsonb),
     'deleted', case when v_since = 0 then '[]'::jsonb else
@@ -612,7 +623,7 @@ begin
   end if;
   insert into public.comments (pee_id, player_id, body) values (p_pee, v_player, v_body) returning id into v_id;
   perform public._log('comment_add', v_player, p_token, jsonb_build_object(
-    'yorum', v_id, 'kayit', p_pee, 'metin', v_body, 'sahibi_ad', (select nick from public.players where id = v_owner)));
+    'yorum', v_id, 'kayit', p_pee, 'metin', v_body, 'sahibi_ad', (select coalesce(display_nick, nick) from public.players where id = v_owner)));
   return v_id;
 end $$;
 
@@ -728,7 +739,7 @@ begin
     ),
     'players', coalesce((
       select jsonb_agg(jsonb_build_object(
-        'id', p.id, 'nick', p.nick, 'avatar', p.avatar,
+        'id', p.id, 'nick', coalesce(p.display_nick, p.nick), 'login_nick', p.nick, 'avatar', p.avatar,
         'pees', (select count(*) from public.pees e where e.player_id = p.id),
         'devices', (select count(*) from public.devices d where d.player_id = p.id),
         'last_seen', (select max(d.last_seen) from public.devices d where d.player_id = p.id),
@@ -736,9 +747,9 @@ begin
         'failed', coalesce(s.failed_attempts, 0),
         'locked_until', case when s.locked_until > now() then s.locked_until end,
         'is_admin', exists (select 1 from public.admins a where a.player_id = p.id),
-        'invited_by', (select i.nick from public.players i where i.id = p.invited_by),
+        'invited_by', (select coalesce(i.display_nick, i.nick) from public.players i where i.id = p.invited_by),
         'invited_count', (select count(*) from public.players c where c.invited_by = p.id)
-      ) order by p.nick)
+      ) order by coalesce(p.display_nick, p.nick))
       from public.players p left join public.player_secrets s on s.player_id = p.id
     ), '[]'::jsonb)
   );
@@ -765,7 +776,7 @@ as $$
 begin
   perform public._admin_ok(p_token, p_session);
   return coalesce((
-    select jsonb_agg(jsonb_build_array(l.id, l.at, l.player_id, coalesce(p.nick, l.nick), l.event, l.detail, l.ip, l.user_agent, l.device)
+    select jsonb_agg(jsonb_build_array(l.id, l.at, l.player_id, coalesce(p.display_nick, p.nick, l.nick), l.event, l.detail, l.ip, l.user_agent, l.device)
                      order by l.id desc)
     from (
       select * from public.audit_log
@@ -797,7 +808,7 @@ begin
         note = nullif(btrim(coalesce(p_note, '')), ''), seq = nextval('public.sync_seq')
     where id = p_id;
   perform public._log('admin_pee_update', v_admin, p_token, jsonb_build_object(
-    'kayit', p_id, 'sahibi', r.player_id, 'sahibi_ad', (select nick from public.players where id = r.player_id),
+    'kayit', p_id, 'sahibi', r.player_id, 'sahibi_ad', (select coalesce(display_nick, nick) from public.players where id = r.player_id),
     'eski', jsonb_build_object('gun', r.day, 'saat', r.hour, 'dakika', r.minute, 'not', r.note),
     'yeni', jsonb_build_object('gun', p_day, 'saat', p_hour, 'dakika', p_minute, 'not', nullif(btrim(coalesce(p_note, '')), ''))));
   return true;
@@ -812,7 +823,7 @@ begin
   if not found then return false; end if;
   insert into public.pee_deletions (pee_id) values (p_id);
   perform public._log('admin_pee_delete', v_admin, p_token, jsonb_build_object(
-    'kayit', p_id, 'sahibi', r.player_id, 'sahibi_ad', (select nick from public.players where id = r.player_id),
+    'kayit', p_id, 'sahibi', r.player_id, 'sahibi_ad', (select coalesce(display_nick, nick) from public.players where id = r.player_id),
     'gun', r.day, 'saat', r.hour, 'dakika', r.minute, 'not', r.note));
   return true;
 end $$;
@@ -820,14 +831,16 @@ end $$;
 create or replace function public.admin_update_player(p_token text, p_session text, p_player_id text, p_nick text, p_avatar text)
 returns boolean language plpgsql security definer set search_path = ''
 as $$
-declare v_admin text := public._admin_ok(p_token, p_session); v_old text;
+declare v_admin text := public._admin_ok(p_token, p_session); v_login text; v_old text; v_new text := nullif(btrim(coalesce(p_nick, '')), '');
 begin
-  if not public._nick_ok(p_nick) then raise exception 'gecersiz_ad'; end if;
-  select nick into v_old from public.players where id = p_player_id;
+  select nick, coalesce(display_nick, nick) into v_login, v_old from public.players where id = p_player_id;
   if not found then return false; end if;
-  update public.players set nick = btrim(p_nick), avatar = p_avatar, updated_at = now() where id = p_player_id;
+  if v_new is not null and not public._nick_ok(v_new) then raise exception 'gecersiz_ad'; end if;
+  -- Giriş adıyla aynıysa ya da boşsa görünen ad kaldırılır
+  if v_new is not null and v_new = v_login then v_new := null; end if;
+  update public.players set display_nick = v_new, avatar = p_avatar, updated_at = now() where id = p_player_id;
   perform public._log('admin_player_update', v_admin, p_token, jsonb_build_object(
-    'kisi', p_player_id, 'eski_ad', v_old, 'yeni_ad', btrim(p_nick), 'avatar', p_avatar));
+    'kisi', p_player_id, 'eski_ad', v_old, 'yeni_ad', coalesce(v_new, v_login), 'giris_adi', v_login, 'avatar', p_avatar));
   return true;
 end $$;
 
@@ -841,7 +854,7 @@ begin
   insert into public.player_secrets (player_id, pin_hash) values (p_player_id, extensions.crypt(p_pin, extensions.gen_salt('bf')))
     on conflict (player_id) do update set pin_hash = excluded.pin_hash, failed_attempts = 0, locked_until = null;
   perform public._log('admin_pin_reset', v_admin, p_token, jsonb_build_object(
-    'kisi', p_player_id, 'kisi_ad', (select nick from public.players where id = p_player_id)));
+    'kisi', p_player_id, 'kisi_ad', (select coalesce(display_nick, nick) from public.players where id = p_player_id)));
   return true;
 end $$;
 
@@ -854,7 +867,7 @@ begin
     where player_id = p_player_id and token_hash <> public._token_hash(p_token);
   get diagnostics n = row_count;
   perform public._log('admin_devices_revoke', v_admin, p_token, jsonb_build_object(
-    'kisi', p_player_id, 'kisi_ad', (select nick from public.players where id = p_player_id), 'cihaz_sayisi', n));
+    'kisi', p_player_id, 'kisi_ad', (select coalesce(display_nick, nick) from public.players where id = p_player_id), 'cihaz_sayisi', n));
   return n;
 end $$;
 
@@ -864,7 +877,7 @@ as $$
 declare v_admin text := public._admin_ok(p_token, p_session); v_nick text; n int;
 begin
   if v_admin = p_player_id then raise exception 'kendini_silemezsin'; end if;
-  select nick into v_nick from public.players where id = p_player_id;
+  select coalesce(display_nick, nick) into v_nick from public.players where id = p_player_id;
   if not found then return false; end if;
   insert into public.pee_deletions (pee_id) select id from public.pees where player_id = p_player_id;
   get diagnostics n = row_count;
@@ -900,7 +913,7 @@ begin
   insert into public.invites (player_id, code) values (p_player_id, upper(encode(extensions.gen_random_bytes(5), 'hex')))
     on conflict (player_id) do update set code = excluded.code, created_at = now();
   perform public._log('admin_player_invite_rotate', v_admin, p_token, jsonb_build_object(
-    'kisi', p_player_id, 'kisi_ad', (select nick from public.players where id = p_player_id)));
+    'kisi', p_player_id, 'kisi_ad', (select coalesce(display_nick, nick) from public.players where id = p_player_id)));
   return true;
 end $$;
 
@@ -913,7 +926,7 @@ begin
   delete from public.comments where id = p_id returning * into c;
   if not found then return false; end if;
   perform public._log('admin_comment_delete', v_admin, p_token, jsonb_build_object(
-    'yorum', p_id, 'metin', c.body, 'yazan', c.player_id, 'yazan_ad', (select nick from public.players where id = c.player_id)));
+    'yorum', p_id, 'metin', c.body, 'yazan', c.player_id, 'yazan_ad', (select coalesce(display_nick, nick) from public.players where id = c.player_id)));
   return true;
 end $$;
 

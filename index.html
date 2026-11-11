@@ -633,7 +633,8 @@ textarea { resize: vertical; min-height: 84px; }
       </div>
       <div id="profAdminForms" style="display:grid;gap:14px">
       <form id="admProfileForm" style="display:grid;gap:10px">
-        <label class="label" for="admNick">Ad ve avatar</label>
+        <label class="label" for="admNick">Görünen ad ve avatar</label>
+        <p class="hint" style="margin:0" id="admLoginHint"></p>
         <input id="admNick" maxlength="24" autocomplete="off">
         <div class="avgrid" id="admAvGrid" role="group" aria-label="Avatar"></div>
         <div class="actions" style="justify-content:flex-start"><button class="ghost" type="submit" id="admProfileSave">Kaydet</button></div>
@@ -1019,6 +1020,7 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
       state.admFor = id; state.admConfirmDel = false;
       const pl = state.players[id] || {};
       $('admNick').value = pl.nick || '';
+      $('admLoginHint').textContent = 'Giriş adı değişmez: ' + (pl.loginNick || pl.nick || '') + '. Boş bırakırsan kendi adı görünür.';
       $('admPin').value = '';
       state.admAvatar = AV[pl.avatar] ? pl.avatar : null;
       const g = $('admAvGrid');
@@ -1041,13 +1043,15 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
   $('admProfileForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     const id = state.profile; if (!id || state.busy) return;
-    const nick = $('admNick').value.trim().slice(0, 24);
-    if (!nick) { toast('Ad boş olamaz.'); return; }
+    const nick = $('admNick').value.trim().replace(/\s+/g, ' ').slice(0, 24);
+    if (nick && !NICK_RE.test(nick)) { toast("Adda sadece harf, rakam, boşluk ve . ' _ - kullanılabilir."); return; }
     const avatar = state.admAvatar || AVATARS[0].id;
     state.busy = true;
     try {
       await adminRpc('admin_update_player', { p_player_id: id, p_nick: nick, p_avatar: avatar });
-      state.players = Object.assign({}, state.players, { [id]: { nick, avatar } });
+      const prevP = state.players[id] || {};
+      state.players = Object.assign({}, state.players, { [id]: Object.assign({}, prevP, { nick: nick || prevP.loginNick || prevP.nick, avatar }) });
+      state.admFor = null;
       toast('Profil güncellendi.'); loadAll();
     } catch (err) { toast(errText(err, 'Kaydedemedim, tekrar dene.')); }
     finally { state.busy = false; render(); }
@@ -1240,7 +1244,7 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
     $('pinRow').hidden = edit; $('pinInput').value = '';
     if (edit) $('inviteRow').hidden = true; else renderInviteRow();
     state.nickEdit = edit;
-    $('nickInput').value = (me && me.nick) || '';
+    $('nickInput').value = (me && (me.loginNick || me.nick)) || '';
     state.pickAvatar = (me && AV[me.avatar] && me.avatar) || AVATARS[Math.floor(Math.random() * AVATARS.length)].id;
     renderPicker();
     $('nickPanel').hidden = false;
@@ -1257,12 +1261,7 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
     if (!NICK_RE.test(nick)) { toast("Adda sadece harf, rakam, boşluk ve . ' _ - kullanılabilir."); $('nickInput').focus(); return; }
     const avatar = AV[state.pickAvatar] ? state.pickAvatar : AVATARS[0].id;
     const isNew = !state.uid || !state.players[state.uid];
-    const key = nick.toLocaleLowerCase('tr');
-    const dup = Object.keys(state.players).find((id) => id !== state.uid && state.players[id].nick.trim().toLocaleLowerCase('tr') === key);
-    if (dup) {
-      toast('Bu isim alınmış, başka bir isim seç.');
-      return;
-    }
+
     const pin = $('pinInput').value.trim();
     if (isNew && !/^[0-9]{4}$/.test(pin)) { toast('4 haneli bir şifre belirle.'); $('pinInput').focus(); return; }
     state.busy = true; $('nickSave').disabled = true;
@@ -1290,7 +1289,9 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
       } else {
         await rpc('update_profile', { p_token: state.token, p_nick: nick, p_avatar: avatar });
       }
-      state.players = Object.assign({}, state.players, { [state.uid]: Object.assign({}, state.players[state.uid], { nick, avatar }) });
+      const prev = state.players[state.uid] || {};
+      const overridden = prev.loginNick && prev.nick !== prev.loginNick;
+      state.players = Object.assign({}, state.players, { [state.uid]: Object.assign({}, prev, { avatar, loginNick: nick, nick: overridden ? prev.nick : nick }) });
       loadAll();
       $('nickPanel').hidden = true;
       toast(isNew ? 'Hoş geldin, ' + nick + '.' : 'Profil güncellendi.');
@@ -1527,7 +1528,7 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
       if (p.is_admin) nm.appendChild(mk('span', 'tag', 'yönetici'));
       if (p.locked_until) nm.appendChild(mk('span', 'tag warn', 'kilitli'));
       if (!p.has_pin) nm.appendChild(mk('span', 'tag warn', 'şifresiz'));
-      grow.append(nm, mk('div', 'meta', p.pees + ' işeme · ' + p.devices + ' cihaz · son görülme ' + relTime(p.last_seen)));
+      grow.append(nm, mk('div', 'meta', (p.login_nick && p.login_nick !== p.nick ? 'giriş adı: ' + p.login_nick + ' · ' : '') + p.pees + ' işeme · ' + p.devices + ' cihaz · son görülme ' + relTime(p.last_seen)));
       row.append(av, grow, mk('span', 'meta', admOpenId === p.id ? '▲' : '▼'));
       row.addEventListener('click', () => {
         admOpenId = admOpenId === p.id ? null : p.id; state.revokeConfirm = null;
@@ -1999,8 +2000,8 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
   }
   function setPlayers(list) {
     const m = {};
-    (list || []).forEach(([id, nick, avatar, invitedBy]) => {
-      if (typeof nick === 'string') m[id] = { nick: nick.slice(0, 24), avatar: typeof avatar === 'string' && AV[avatar] ? avatar : null, invitedBy: invitedBy || null };
+    (list || []).forEach(([id, nick, avatar, invitedBy, loginNick]) => {
+      if (typeof nick === 'string') m[id] = { nick: nick.slice(0, 24), avatar: typeof avatar === 'string' && AV[avatar] ? avatar : null, invitedBy: invitedBy || null, loginNick: typeof loginNick === 'string' ? loginNick : null };
     });
     state.players = m;
   }
