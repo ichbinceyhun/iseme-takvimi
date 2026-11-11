@@ -101,6 +101,23 @@ create table if not exists public.invites (
   created_at timestamptz not null default now()
 );
 
+-- Tepkiler ve yorumlar
+create table if not exists public.reactions (
+  pee_id uuid not null references public.pees(id) on delete cascade,
+  player_id text not null references public.players(id) on delete cascade,
+  emoji text not null check (emoji in ('su', 'gul', 'tac', 'ates', 'igrenc')),
+  created_at timestamptz not null default now(),
+  primary key (pee_id, player_id, emoji)
+);
+create table if not exists public.comments (
+  id uuid primary key default gen_random_uuid(),
+  pee_id uuid not null references public.pees(id) on delete cascade,
+  player_id text not null references public.players(id) on delete cascade,
+  body text not null check (char_length(body) between 1 and 200),
+  created_at timestamptz not null default now()
+);
+create index if not exists comments_pee_idx on public.comments (pee_id, created_at);
+
 -- Site ayarları (yöneticinin genel davet kodu). Siteden okunamaz.
 create table if not exists public.settings (
   key text primary key,
@@ -123,6 +140,8 @@ alter table public.admin_sessions enable row level security;
 alter table public.audit_log enable row level security;
 alter table public.settings enable row level security;
 alter table public.invites enable row level security;
+alter table public.reactions enable row level security;
+alter table public.comments enable row level security;
 
 -- Tablolara doğrudan erişim tamamen kapalı. Okuma ve yazma yalnızca
 -- aşağıdaki fonksiyonlarla ve giriş yapmış bir cihazla yapılır.
@@ -134,7 +153,7 @@ drop policy if exists pees_insert on public.pees;
 drop policy if exists pees_delete on public.pees;
 revoke all on public.players, public.pees from anon, authenticated;
 revoke all on public.player_secrets, public.devices, public.pee_deletions, public.admins,
-  public.admin_sessions, public.audit_log, public.settings, public.invites from anon, authenticated;
+  public.admin_sessions, public.audit_log, public.settings, public.invites, public.reactions, public.comments from anon, authenticated;
 revoke all on sequence public.sync_seq from anon, authenticated;
 revoke all on sequence public.audit_log_id_seq from anon, authenticated;
 
@@ -537,6 +556,79 @@ begin
   return v_code;
 end $$;
 
+-- Ekranda görünen kayıtların tepki ve yorumları (en fazla 100 kayıt)
+create or replace function public.get_social(p_token text, p_ids uuid[])
+returns jsonb language plpgsql stable security definer set search_path = ''
+as $$
+declare v_player text := public._player_for(p_token); v_ids uuid[];
+begin
+  if v_player is null then return null; end if;
+  v_ids := (select array_agg(x) from (select unnest(p_ids) as x limit 100) t);
+  return jsonb_build_object(
+    'reactions', coalesce((
+      select jsonb_agg(jsonb_build_array(pee_id, emoji, n, mine))
+      from (select pee_id, emoji, count(*) as n, bool_or(player_id = v_player) as mine
+            from public.reactions where pee_id = any(v_ids) group by pee_id, emoji) r
+    ), '[]'::jsonb),
+    'comments', coalesce((
+      select jsonb_agg(jsonb_build_array(id, pee_id, player_id, body, created_at) order by created_at)
+      from public.comments where pee_id = any(v_ids)
+    ), '[]'::jsonb)
+  );
+end $$;
+
+-- Tepki ver / geri al. Sonuç: tepki şimdi açık mı?
+create or replace function public.toggle_reaction(p_token text, p_pee uuid, p_emoji text)
+returns boolean language plpgsql security definer set search_path = ''
+as $$
+declare v_player text := public._player_for(p_token);
+begin
+  if v_player is null then raise exception 'yetkisiz'; end if;
+  if p_emoji not in ('su', 'gul', 'tac', 'ates', 'igrenc') then raise exception 'gecersiz_tepki'; end if;
+  if not exists (select 1 from public.pees where id = p_pee) then raise exception 'kayit_yok'; end if;
+  delete from public.reactions where pee_id = p_pee and player_id = v_player and emoji = p_emoji;
+  if found then return false; end if;
+  if (select count(*) from public.reactions where player_id = v_player and created_at > now() - interval '1 minute') >= 30 then
+    raise exception 'cok_hizli';
+  end if;
+  insert into public.reactions (pee_id, player_id, emoji) values (p_pee, v_player, p_emoji);
+  return true;
+end $$;
+
+-- Yorum yaz (en fazla 200 karakter; dakikada 5, saatte 60)
+create or replace function public.add_comment(p_token text, p_pee uuid, p_body text)
+returns uuid language plpgsql security definer set search_path = ''
+as $$
+declare v_player text := public._player_for(p_token); v_body text := btrim(regexp_replace(coalesce(p_body, ''), '[[:cntrl:]]', ' ', 'g')); v_id uuid; v_owner text;
+begin
+  if v_player is null then raise exception 'yetkisiz'; end if;
+  if char_length(v_body) < 1 then raise exception 'bos_yorum'; end if;
+  if char_length(v_body) > 200 then raise exception 'uzun_yorum'; end if;
+  select player_id into v_owner from public.pees where id = p_pee;
+  if v_owner is null then raise exception 'kayit_yok'; end if;
+  if (select count(*) from public.comments where player_id = v_player and created_at > now() - interval '1 minute') >= 5
+     or (select count(*) from public.comments where player_id = v_player and created_at > now() - interval '1 hour') >= 60 then
+    raise exception 'cok_hizli';
+  end if;
+  insert into public.comments (pee_id, player_id, body) values (p_pee, v_player, v_body) returning id into v_id;
+  perform public._log('comment_add', v_player, p_token, jsonb_build_object(
+    'yorum', v_id, 'kayit', p_pee, 'metin', v_body, 'sahibi_ad', (select nick from public.players where id = v_owner)));
+  return v_id;
+end $$;
+
+-- Kendi yorumunu sil
+create or replace function public.delete_comment(p_token text, p_id uuid)
+returns boolean language plpgsql security definer set search_path = ''
+as $$
+declare v_player text := public._player_for(p_token); v_body text;
+begin
+  if v_player is null then raise exception 'yetkisiz'; end if;
+  delete from public.comments where id = p_id and player_id = v_player returning body into v_body;
+  if not found then return false; end if;
+  perform public._log('comment_delete', v_player, p_token, jsonb_build_object('yorum', p_id, 'metin', v_body));
+  return true;
+end $$;
+
 -- Kumanda paneli: giriş ------------------------------------------------------
 
 -- Bu cihaz yönetici mi, yönetici şifresi belirlenmiş mi?
@@ -812,6 +904,19 @@ begin
   return true;
 end $$;
 
+-- Yönetici: herhangi bir yorumu sil
+create or replace function public.admin_delete_comment(p_token text, p_session text, p_id uuid)
+returns boolean language plpgsql security definer set search_path = ''
+as $$
+declare v_admin text := public._admin_ok(p_token, p_session); c public.comments%rowtype;
+begin
+  delete from public.comments where id = p_id returning * into c;
+  if not found then return false; end if;
+  perform public._log('admin_comment_delete', v_admin, p_token, jsonb_build_object(
+    'yorum', p_id, 'metin', c.body, 'yazan', c.player_id, 'yazan_ad', (select nick from public.players where id = c.player_id)));
+  return true;
+end $$;
+
 -- Yetkiler -------------------------------------------------------------------
 
 do $$
@@ -822,6 +927,11 @@ begin
     'register_player(text, text, text, text, text)',
     'admin_invite(text, text, boolean)',
     'my_invite(text, boolean)',
+    'get_social(text, uuid[])',
+    'toggle_reaction(text, uuid, text)',
+    'add_comment(text, uuid, text)',
+    'delete_comment(text, uuid)',
+    'admin_delete_comment(text, text, uuid)',
     'admin_rotate_player_invite(text, text, text)',
     'secure_existing(text, text, text)',
     'login(text, text, text)',

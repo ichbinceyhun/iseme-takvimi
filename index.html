@@ -111,6 +111,23 @@ h1 .drop { color: var(--lv3); }
 .pee:disabled { opacity: .55; cursor: default; }
 .pee.sm { font-size: 1rem; padding: 10px 18px; }
 a.pee, a.ghost { display: inline-block; text-decoration: none; text-align: center; }
+.social { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.rx {
+  border: 1px solid var(--line); background: transparent; color: var(--fg); border-radius: 999px;
+  padding: 2px 9px; font: inherit; font-size: .85rem; cursor: pointer; line-height: 1.6; display: inline-flex; align-items: center; gap: 3px;
+}
+.rx .n { font-family: var(--font-mono); font-size: .78rem; }
+.rx.zero { opacity: .55; }
+.rx.on { background: var(--lv1); border-color: var(--lv3); opacity: 1; }
+.rx:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.comments { display: grid; gap: 6px; margin-top: 8px; padding-left: 10px; border-left: 2px solid var(--line); }
+.cm { font-size: .88rem; overflow-wrap: anywhere; }
+.cm .cmwho { font-weight: 600; }
+.cm .cmwhen { font-family: var(--font-mono); font-size: .74rem; color: var(--muted); margin-left: 6px; }
+.cm .del { margin-left: 8px; }
+.cform { display: flex; gap: 6px; }
+.cform input { flex: 1 1 auto; padding: 7px 10px; font-size: .9rem; }
+.cform button { padding: 7px 12px; }
 .invmsg { background: var(--bg); border-radius: 12px; padding: 12px 14px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: .95rem; }
 .ghost { background: transparent; color: var(--fg); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; font: inherit; cursor: pointer; }
 .ghost:hover { border-color: var(--muted); }
@@ -797,6 +814,8 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
     }
     top.append(who, right); li.appendChild(top);
     if (p.note) { const n = document.createElement('p'); n.className = 'note'; n.textContent = p.note; li.appendChild(n); }
+    li.appendChild(socialBar(p));
+    if (state.openComments === p.id) li.appendChild(commentBox(p));
     return li;
   }
 
@@ -1010,9 +1029,13 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
   }
 
   function render() {
+    const act = document.activeElement;
+    if (act && act.classList && act.classList.contains('cinput')) { state.renderPending = true; return; }
+    state.renderPending = false;
     document.querySelectorAll('[data-feed]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.feed === state.feed)));
     const sum = summarize();
     renderGrid(sum); renderSummary(sum); renderDetail(sum); renderFeed(); renderRank(); renderMe(); renderProfile(); renderClaim();
+    queueSocial();
   }
 
   // Onay penceresi
@@ -1242,6 +1265,7 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
     admin_login_ok: 'Panele girdi', admin_login_fail: 'Panele hatalı giriş', admin_password_set: 'Yönetici şifresini belirledi',
     admin_pee_update: 'Kayıt düzenledi', admin_pee_delete: 'Kayıt sildi', admin_player_update: 'Profil düzenledi',
     admin_pin_reset: 'Şifre sıfırladı', admin_invite_rotate: 'Genel davet bağlantısını yeniledi',
+    comment_add: 'Yorum yaptı', comment_delete: 'Yorumunu sildi', admin_comment_delete: 'Yorum sildi',
     invite_rotate: 'Davet linkini yeniledi', admin_player_invite_rotate: 'Davet linkini sıfırladı', register_fail: 'Davetsiz kayıt denemesi', admin_devices_revoke: 'Cihazlardan çıkardı', admin_player_delete: 'Profil sildi',
   };
   const BAD_EVENTS = ['login_fail', 'login_locked', 'admin_login_fail', 'register_fail'];
@@ -1255,6 +1279,9 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
       case 'login_locked': return 'Profil kilitliyken denendi';
       case 'register': return d.davet_eden_ad ? d.davet_eden_ad + ' davet etti' : 'Genel davet koduyla';
       case 'admin_player_invite_rotate': return d.kisi_ad || '';
+      case 'comment_add': return (d.sahibi_ad ? d.sahibi_ad + ' kaydına: ' : '') + '"' + (d.metin || '') + '"';
+      case 'comment_delete': return '"' + (d.metin || '') + '"';
+      case 'admin_comment_delete': return (d.yazan_ad || '?') + ': "' + (d.metin || '') + '"';
       case 'register_fail': return d.nick ? '"' + d.nick + '" adıyla, geçersiz davetle' : 'Geçersiz davetle';
       case 'profile_update': case 'admin_player_update':
         return (d.eski_ad && d.eski_ad !== d.yeni_ad) ? d.eski_ad + ' → ' + d.yeni_ad : 'Avatar değişti';
@@ -1519,6 +1546,157 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
   $('logPlayer').addEventListener('change', () => loadLogs(true));
   $('logEvent').addEventListener('change', () => loadLogs(true));
 
+  // ---------------- Tepkiler ve yorumlar ----------------
+  const RX = [['su', '💦'], ['gul', '😂'], ['tac', '👑'], ['ates', '🔥'], ['igrenc', '🤢']];
+  const RX_NAME = { su: 'Fışkırık', gul: 'Güldüm', tac: 'Kral', ates: 'Ateş', igrenc: 'İğrenç' };
+  state.social = { rx: new Map(), cm: new Map() };
+  state.drafts = {};
+  let socialKey = ''; let socialAt = 0; let socialTimer = null; let socialLoading = false;
+
+  function visiblePeeIds() {
+    const ids = new Set();
+    document.querySelectorAll('[data-pee]').forEach((e) => ids.add(e.dataset.pee));
+    return [...ids].slice(0, 100);
+  }
+  function queueSocial(force) {
+    clearTimeout(socialTimer);
+    socialTimer = setTimeout(() => loadSocial(force), 150);
+  }
+  async function loadSocial(force) {
+    if (!state.uid || !state.sb || socialLoading) return;
+    const ids = visiblePeeIds();
+    const key = ids.slice().sort().join(',');
+    if (!ids.length) return;
+    if (!force && key === socialKey && Date.now() - socialAt < 25000) return;
+    socialLoading = true;
+    try {
+      const d = await rpc('get_social', { p_token: state.token, p_ids: ids });
+      if (!d) return;
+      const rx = new Map(); const cm = new Map();
+      (d.reactions || []).forEach(([pee, emoji, n, mine]) => {
+        if (!rx.has(pee)) rx.set(pee, {});
+        rx.get(pee)[emoji] = { n: Number(n) || 0, mine: !!mine };
+      });
+      (d.comments || []).forEach(([id, pee, by, body, at]) => {
+        if (!cm.has(pee)) cm.set(pee, []);
+        cm.get(pee).push({ id: String(id), by: String(by), body: String(body || ''), at });
+      });
+      const changed = JSON.stringify([...rx]) !== JSON.stringify([...state.social.rx]) || JSON.stringify([...cm]) !== JSON.stringify([...state.social.cm]);
+      state.social = { rx, cm }; socialKey = key; socialAt = Date.now();
+      if (changed) render();
+    } catch (e) {} finally { socialLoading = false; }
+  }
+
+  function socialBar(p) {
+    const bar = document.createElement('div'); bar.className = 'social'; bar.dataset.pee = p.id;
+    const mine = state.social.rx.get(p.id) || {};
+    RX.forEach(([key, emo]) => {
+      const r = mine[key] || { n: 0, mine: false };
+      const b = document.createElement('button'); b.type = 'button';
+      b.className = 'rx' + (r.mine ? ' on' : '') + (r.n ? '' : ' zero');
+      b.dataset.rx = p.id + '|' + key;
+      b.setAttribute('aria-pressed', String(r.mine));
+      b.setAttribute('aria-label', RX_NAME[key] + (r.n ? ', ' + r.n : ''));
+      b.append(document.createTextNode(emo));
+      if (r.n) { const n = document.createElement('span'); n.className = 'n'; n.textContent = r.n; b.appendChild(n); }
+      bar.appendChild(b);
+    });
+    const cms = state.social.cm.get(p.id) || [];
+    const c = document.createElement('button'); c.type = 'button';
+    c.className = 'rx' + (state.openComments === p.id ? ' on' : '') + (cms.length ? '' : ' zero');
+    c.dataset.cmToggle = p.id;
+    c.setAttribute('aria-expanded', String(state.openComments === p.id));
+    c.setAttribute('aria-label', 'Yorumlar' + (cms.length ? ', ' + cms.length : ''));
+    c.append(document.createTextNode('💬'));
+    if (cms.length) { const n = document.createElement('span'); n.className = 'n'; n.textContent = cms.length; c.appendChild(n); }
+    bar.appendChild(c);
+    return bar;
+  }
+
+  function commentBox(p) {
+    const box = document.createElement('div'); box.className = 'comments';
+    const cms = state.social.cm.get(p.id) || [];
+    if (!cms.length) { const e = document.createElement('div'); e.className = 'hint'; e.style.margin = '0'; e.textContent = 'Henüz yorum yok. İlk yorumu sen yaz.'; box.appendChild(e); }
+    cms.forEach((c) => {
+      const row = document.createElement('div'); row.className = 'cm';
+      const who = document.createElement('span'); who.className = 'cmwho'; who.textContent = nickOf(c.by) + ': ';
+      row.append(who, document.createTextNode(c.body));
+      const when = document.createElement('span'); when.className = 'cmwhen'; when.textContent = fmt(new Date(c.at).getTime());
+      row.appendChild(when);
+      if (c.by === state.uid || adminOn()) {
+        const d = document.createElement('button'); d.type = 'button'; d.className = 'del';
+        d.textContent = state.confirmCm === c.id ? 'Emin misin?' : 'Sil';
+        d.dataset.cmDel = c.id + '|' + c.by;
+        row.appendChild(d);
+      }
+      box.appendChild(row);
+    });
+    const f = document.createElement('form'); f.className = 'cform'; f.dataset.cform = p.id;
+    const inp = document.createElement('input'); inp.className = 'cinput'; inp.maxLength = 200; inp.placeholder = 'Yorum yaz…';
+    inp.setAttribute('aria-label', 'Yorum'); inp.value = state.drafts[p.id] || '';
+    inp.addEventListener('input', () => { state.drafts[p.id] = inp.value; });
+    inp.addEventListener('blur', () => { if (state.renderPending) setTimeout(render, 0); });
+    const send = document.createElement('button'); send.type = 'submit'; send.className = 'ghost'; send.textContent = 'Gönder';
+    f.append(inp, send);
+    box.appendChild(f);
+    return box;
+  }
+
+  // Tıklamalar ve gönderimler: kayıt listeleri sık yeniden çizildiği için olaylar belgede yakalanır
+  document.addEventListener('click', async (e) => {
+    const rxBtn = e.target.closest('[data-rx]');
+    if (rxBtn) {
+      const [pee, key] = rxBtn.dataset.rx.split('|');
+      const cur = (state.social.rx.get(pee) || {})[key] || { n: 0, mine: false };
+      const next = { n: Math.max(0, cur.n + (cur.mine ? -1 : 1)), mine: !cur.mine };
+      const m = Object.assign({}, state.social.rx.get(pee), { [key]: next });
+      state.social.rx.set(pee, m); render();
+      try { await rpc('toggle_reaction', { p_token: state.token, p_pee: pee, p_emoji: key }); }
+      catch (err) { toast(errText(err, 'Tepki verilemedi.')); }
+      loadSocial(true);
+      return;
+    }
+    const tg = e.target.closest('[data-cm-toggle]');
+    if (tg) {
+      const id = tg.dataset.cmToggle;
+      state.openComments = state.openComments === id ? null : id; state.confirmCm = null;
+      render();
+      if (state.openComments) {
+        const inp = document.querySelector('[data-cform="' + id + '"] .cinput');
+        if (inp && window.matchMedia('(pointer: fine)').matches) inp.focus();
+      }
+      return;
+    }
+    const del = e.target.closest('[data-cm-del]');
+    if (del) {
+      const [cid, by] = del.dataset.cmDel.split('|');
+      if (state.confirmCm !== cid) { state.confirmCm = cid; render(); return; }
+      state.confirmCm = null;
+      try {
+        if (by !== state.uid) await adminRpc('admin_delete_comment', { p_id: cid });
+        else await rpc('delete_comment', { p_token: state.token, p_id: cid });
+        toast('Yorum silindi.');
+      } catch (err) { toast(errText(err, 'Silemedim.')); }
+      loadSocial(true);
+    }
+  });
+  document.addEventListener('submit', async (e) => {
+    const f = e.target.closest('[data-cform]');
+    if (!f) return;
+    e.preventDefault();
+    const pee = f.dataset.cform;
+    const inp = f.querySelector('.cinput');
+    const body = (inp.value || '').trim();
+    if (!body) return;
+    const btn = f.querySelector('button'); btn.disabled = true;
+    try {
+      await rpc('add_comment', { p_token: state.token, p_pee: pee, p_body: body });
+      state.drafts[pee] = ''; inp.value = ''; inp.blur();
+      await loadSocial(true);
+    } catch (err) { toast(errText(err, 'Yorum gönderilemedi.')); }
+    finally { btn.disabled = false; }
+  });
+
   // ---------------- Tuvalete davet et ----------------
   let invLink = '';
   function inviteText(link) {
@@ -1614,6 +1792,9 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
     if (m.includes('gelecek_tarih')) return 'Geleceğe işeyemezsin.';
     if (m.includes('eski_tarih')) return 'En fazla 7 gün öncesine kayıt girebilirsin.';
     if (m.includes('cok_hizli')) return 'Bu kadar sık işenmez. Biraz bekle.';
+    if (m.includes('bos_yorum')) return 'Boş yorum gönderilemez.';
+    if (m.includes('uzun_yorum')) return 'Yorum en fazla 200 karakter olabilir.';
+    if (m.includes('kayit_yok')) return 'Bu kayıt silinmiş.';
     if (m.includes('gecersiz_ad')) return "Adda sadece harf, rakam, boşluk ve . ' _ - kullanılabilir.";
     if (m.includes('yetkisiz')) return 'Bu cihaz bir profile bağlı değil. Sayfayı yenile.';
     if (m.includes('kendini_silemezsin')) return 'Kendi profilini silemezsin.';
@@ -1827,7 +2008,7 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
     state.authChecked = true;
     if (state.uid) { readCache(); render(); await loadAll(); }
     else { state.loaded = true; state.playersLoaded = true; render(); loadPublicStats(); }
-    setInterval(() => { if (document.visibilityState === 'visible') loadAll(); }, 30000);
+    setInterval(() => { if (document.visibilityState === 'visible') { loadAll(); queueSocial(true); } }, 30000);
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') loadAll(); });
   }
   start();
