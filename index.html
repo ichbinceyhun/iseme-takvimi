@@ -921,27 +921,32 @@ const SUPABASE_ANON_KEY = (window.ISEME_CONFIG && window.ISEME_CONFIG.key) || ''
   function rankRows() {
     const ts = todayStart(), ws = weekStart();
     const stats = new Map();
-    Object.keys(state.players).forEach((id) => stats.set(id, { today: 0, week: 0, total: 0 }));
+    const blank = () => ({ today: 0, week: 0, total: 0, lastToday: Infinity });
+    Object.keys(state.players).forEach((id) => stats.set(id, blank()));
     for (const p of state.pees) {
-      const s = stats.get(p.by) || { today: 0, week: 0, total: 0 };
-      s.total++; if (p.ts >= ws) s.week++; if (p.ts >= ts) s.today++;
+      const s = stats.get(p.by) || blank();
+      s.total++; if (p.ts >= ws) s.week++;
+      if (p.ts >= ts) { s.today++; s.lastToday = s.today === 1 ? p.ts : Math.max(s.lastToday, p.ts); }
       stats.set(p.by, s);
     }
-    return [...stats.entries()].sort((a, b) => b[1].today - a[1].today || b[1].week - a[1].week || b[1].total - a[1].total);
+    // Eşitlikte bugünkü sayısına ilk ulaşan önde (son işemesi daha erken olan)
+    return [...stats.entries()].sort((a, b) => b[1].today - a[1].today
+      || (a[1].today ? a[1].lastToday - b[1].lastToday : 0)
+      || b[1].week - a[1].week || b[1].total - a[1].total);
   }
 
   function renderRank() {
     const body = $('rankBody'); body.innerHTML = '';
     const rows = rankRows();
     $('rankEmpty').hidden = rows.length > 0;
-    const topToday = rows.length && rows[0][1].today > 0 ? rows[0][1].today : -1;
+    const champ = rows.length && rows[0][1].today > 0 ? rows[0][0] : null;
     rows.forEach(([id, s], i) => {
       const tr = document.createElement('tr');
       const td = (txt, cls) => { const c = document.createElement('td'); if (cls) c.className = cls; c.textContent = txt; tr.appendChild(c); return c; };
       td(String(i + 1), 'n');
       const name = td('', 'name');
       name.appendChild(personLink(id));
-      if (s.today === topToday) { const t = document.createElement('span'); t.className = 'tag'; t.textContent = 'günün şampiyonu'; name.appendChild(t); }
+      if (id === champ) { const t = document.createElement('span'); t.className = 'tag'; t.textContent = 'günün şampiyonu'; name.appendChild(t); }
       td(String(s.today), 'hot'); td(String(s.week)); td(String(s.total));
       body.appendChild(tr);
     });
